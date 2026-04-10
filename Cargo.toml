@@ -17,7 +17,7 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-types = "1"
 base64 = "0.22"
 sha2 = "0.10"
-rand = "0.9"
+rand = "0.10"
 webbrowser = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
