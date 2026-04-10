@@ -16,7 +16,7 @@ aws-sdk-sts = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-types = "1"
 base64 = "0.22"
-sha2 = "0.10"
+sha2 = "0.11"
 rand = "0.9"
 webbrowser = "1"
 tracing = "0.1"
