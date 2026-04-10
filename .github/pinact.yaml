@@ -1,0 +1,10 @@
+version: 3
+
+files:
+  - pattern: .github/workflows/*.yml
+  - pattern: .github/workflows/*.yaml
+  - pattern: .github/actions/*/*.yml
+  - pattern: .github/actions/*/*.yaml
+
+# Enforce that every action is pinned to a full commit SHA with a version
+# comment. pinact will rewrite tag-pinned references into SHA form.

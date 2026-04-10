@@ -1,0 +1,73 @@
+# cargo-deny configuration.
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Strict policy: only OSI-approved permissive licenses are allowed, and any
+# unvendored source must come from crates.io. A security advisory in a
+# dependency fails CI immediately.
+
+[graph]
+# We build on macOS (Intel / Apple Silicon) and Linux (x86_64 / aarch64 musl).
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Explicit allow-list of acceptable SPDX license identifiers. Anything outside
+# this list must be deliberately reviewed and added.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.93
+
+# A handful of well-known crates bundle license text that cargo-deny cannot
+# match automatically. List them explicitly when necessary.
+exceptions = []
+
+[[licenses.clarify]]
+name = "ring"
+# ring's license is a combination of several permissive licenses; upstream
+# distributes a single LICENSE file that cargo-deny cannot parse cleanly.
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# Crates that must never appear in the dependency tree.
+deny = []
+
+# Allowlist for multiple versions of the same crate. Add with a clear reason.
+skip = []
+
+[sources]
+# Only allow crates.io as a registry source.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
