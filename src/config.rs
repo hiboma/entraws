@@ -70,7 +70,7 @@ pub struct Config {
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
     pub region: String,
-    pub duration_seconds: u32,
+    pub duration_seconds: i32,
     pub profile_to_update: String,
     pub aws_config_file: PathBuf,
     pub debug: bool,
@@ -129,13 +129,22 @@ impl Config {
             .or_else(|| env::var("AWS_REGION").ok())
             .unwrap_or_else(|| "us-east-1".to_string());
 
-        // Resolve duration_seconds: CLI > env > default
-        let duration_seconds = args.duration_seconds.unwrap_or_else(|| {
-            env::var("DURATION_SECONDS")
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(3600)
-        });
+        // Resolve duration_seconds: CLI > env > default.
+        //
+        // The STS SDK expects `i32`, so we convert the `u32` CLI value
+        // (clap stores unsigned) using `i32::try_from`, falling back to
+        // the 3600-second default if the value is out of range. STS
+        // itself only accepts 900..=43200, so the overflow branch is
+        // unreachable in practice, but we still handle it safely.
+        let duration_seconds: i32 = args
+            .duration_seconds
+            .and_then(|v| i32::try_from(v).ok())
+            .or_else(|| {
+                env::var("DURATION_SECONDS")
+                    .ok()
+                    .and_then(|v| v.parse::<i32>().ok())
+            })
+            .unwrap_or(3600);
 
         // Resolve profile_to_update: CLI > env > default
         let profile_to_update = args

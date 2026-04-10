@@ -6,7 +6,7 @@ use base64::Engine;
 use rand::RngCore;
 use serde::Deserialize;
 
-use crate::constants::{HTTP_TIMEOUT_SECS, USER_AGENT};
+use crate::constants::HTTP_TIMEOUT_SECS;
 
 // ---------------------------------------------------------------------------
 // OIDC Discovery
@@ -33,19 +33,17 @@ pub struct OidcConfig {
 ///     sys.exit("Issue communicated with OIDC provider. ...")
 /// ```
 pub async fn get_oidc_config(discovery_url: &str) -> OidcConfig {
-    let client = reqwest::Client::builder()
+    let client = crate::http::shared_client();
+
+    let response = client
+        .get(discovery_url)
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .user_agent(USER_AGENT)
-        .build()
+        .send()
+        .await
         .unwrap_or_else(|e| {
-            eprintln!("Failed to build HTTP client: {e}");
+            eprintln!("Failed to get OIDC configuration from {discovery_url} with error {e}");
             process::exit(1);
         });
-
-    let response = client.get(discovery_url).send().await.unwrap_or_else(|e| {
-        eprintln!("Failed to get OIDC configuration from {discovery_url} with error {e}");
-        process::exit(1);
-    });
 
     let config: OidcConfig = response.json().await.unwrap_or_else(|e| {
         eprintln!("Failed to parse OIDC configuration from {discovery_url} with error {e}");
@@ -107,15 +105,12 @@ impl DynamicClient {
             serde_json::to_string_pretty(&registration_data).unwrap_or_default()
         );
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-            .build()
-            .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+        let client = crate::http::shared_client();
 
         let response = client
             .post(registration_endpoint)
+            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
             .header("Content-Type", "application/json")
-            .header("User-Agent", USER_AGENT)
             .json(&registration_data)
             .send()
             .await

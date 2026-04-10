@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::constants::{HTTP_TIMEOUT_SECS, USER_AGENT};
+use crate::constants::HTTP_TIMEOUT_SECS;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,10 +57,7 @@ pub async fn exchange_authorization_code(
     client_id: &str,
     code_verifier: &str,
 ) -> Result<TokenResponse, TokenError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| TokenError::RequestFailed(format!("Failed to build HTTP client: {e}")))?;
+    let client = crate::http::shared_client();
 
     let params = [
         ("grant_type", "authorization_code"),
@@ -72,8 +69,8 @@ pub async fn exchange_authorization_code(
 
     let response = client
         .post(token_endpoint)
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", USER_AGENT)
         .form(&params)
         .send()
         .await

@@ -17,7 +17,11 @@ pub struct AppState {
     pub config: crate::config::Config,
     pub oidc_config: crate::oidc::OidcConfig,
     pub pkce: crate::pkce::PkceParams,
-    pub dynamic_client_id: tokio::sync::Mutex<Option<String>>,
+    /// Client ID obtained from dynamic client registration. Written once
+    /// by the `home` handler and read once by `process_token`; there is no
+    /// concurrent writer, so `OnceLock` is sufficient (and cheaper than a
+    /// `tokio::sync::Mutex`).
+    pub dynamic_client_id: std::sync::OnceLock<String>,
     pub shutdown_notify: Arc<Notify>,
 }
 
@@ -74,7 +78,9 @@ async fn home(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         let id = if let Some(ref ep) = oidc_config.registration_endpoint {
             match crate::oidc::register_dynamic_client(ep, REDIRECT_URI).await {
                 Ok(id) => {
-                    *state.dynamic_client_id.lock().await = Some(id.clone());
+                    // `set` only fails if the value was already initialised;
+                    // we intentionally ignore that case (idempotent write).
+                    state.dynamic_client_id.set(id.clone()).ok();
                     id
                 }
                 Err(e) => {
@@ -469,8 +475,7 @@ async fn process_token(
         // Determine the client_id to use for the token exchange.
         let client_id = if config.is_dynamic_client {
             debug!("/process_token is handling a dynamic client");
-            let lock = state.dynamic_client_id.lock().await;
-            lock.clone().unwrap_or_default()
+            state.dynamic_client_id.get().cloned().unwrap_or_default()
         } else {
             debug!(
                 "/process_token is handling a non-dynamic client using authorization code grant"
@@ -521,7 +526,7 @@ async fn process_token(
         &config.region,
         &config.role,
         &id_token,
-        config.duration_seconds as i32,
+        config.duration_seconds,
         config.dangerously_log_secrets,
         &state.oidc_config.issuer,
     )

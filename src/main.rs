@@ -2,6 +2,7 @@ mod aws;
 mod client_credentials;
 mod config;
 mod constants;
+mod http;
 mod oidc;
 mod pkce;
 mod server;
@@ -70,7 +71,7 @@ async fn main() {
             config,
             oidc_config,
             pkce: pkce_params,
-            dynamic_client_id: tokio::sync::Mutex::new(None),
+            dynamic_client_id: std::sync::OnceLock::new(),
             shutdown_notify: shutdown.clone(),
         });
 

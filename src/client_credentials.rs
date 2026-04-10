@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use tracing::debug;
 
-use crate::constants::{CLIENT_CREDENTIALS_TIMEOUT_SECS, USER_AGENT};
+use crate::constants::CLIENT_CREDENTIALS_TIMEOUT_SECS;
 
 const DEFAULT_SCOPES: &str = "openid email";
 
@@ -28,7 +28,7 @@ pub async fn handle_client_credentials_flow(
         .as_deref()
         .expect("client_secret is required for client_credentials flow");
 
-    let client = reqwest::Client::new();
+    let client = crate::http::shared_client();
 
     // Base form data shared by both authentication methods
     let mut base_form = HashMap::new();
@@ -50,25 +50,16 @@ pub async fn handle_client_credentials_flow(
     }
 
     // --- Fall back to client_secret_post (credentials in POST body) ---
-    let post_result = try_client_secret_post(
+    let response_text = try_client_secret_post(
         &client,
         token_endpoint,
         &base_form,
         client_id,
         client_secret,
     )
-    .await;
+    .await?;
 
-    match post_result {
-        Some(response_text) => {
-            process_client_credentials_response(config, oidc_config, &response_text).await
-        }
-        None => {
-            // try_client_secret_post already called eprintln! and exit(1) on failure,
-            // so this branch is unreachable in practice.
-            Err("Token request failed with both client_secret_basic and client_secret_post".into())
-        }
-    }
+    process_client_credentials_response(config, oidc_config, &response_text).await
 }
 
 /// Attempt `client_secret_basic` authentication (HTTP Basic Auth).
@@ -86,7 +77,6 @@ async fn try_client_secret_basic(
         .post(token_endpoint)
         .basic_auth(client_id, Some(client_secret))
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", USER_AGENT)
         .timeout(Duration::from_secs(CLIENT_CREDENTIALS_TIMEOUT_SECS))
         .form(form)
         .send()
@@ -125,53 +115,41 @@ async fn try_client_secret_basic(
 }
 
 /// Attempt `client_secret_post` authentication (credentials in POST body).
-/// Returns `Some(response_body)` on HTTP 200, or calls `eprintln!` + `exit(1)` on failure.
+/// Returns `Ok(response_body)` on HTTP 200, or `Err(message)` on failure so the
+/// caller can surface the error to `main` instead of exiting directly.
 async fn try_client_secret_post(
     client: &reqwest::Client,
     token_endpoint: &str,
     base_form: &HashMap<&str, &str>,
     client_id: &str,
     client_secret: &str,
-) -> Option<String> {
+) -> Result<String, String> {
     debug!("Attempting client_secret_post authentication");
 
     let mut form = base_form.clone();
     form.insert("client_id", client_id);
     form.insert("client_secret", client_secret);
 
-    let result = client
+    let resp = client
         .post(token_endpoint)
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", USER_AGENT)
         .timeout(Duration::from_secs(CLIENT_CREDENTIALS_TIMEOUT_SECS))
         .form(&form)
         .send()
-        .await;
+        .await
+        .map_err(|e| format!("Failed to request token from provider: {e}"))?;
 
-    match result {
-        Ok(resp) => {
-            if resp.status().as_u16() != 200 {
-                let body = resp.text().await.unwrap_or_default();
-                eprintln!(
-                    "Token request failed with both client_secret_basic and client_secret_post: {}",
-                    body
-                );
-                std::process::exit(1);
-            }
-            debug!("client_secret_post succeeded");
-            match resp.text().await {
-                Ok(body) => Some(body),
-                Err(e) => {
-                    eprintln!("Failed to request token from provider: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to request token from provider: {}", e);
-            std::process::exit(1);
-        }
+    if resp.status().as_u16() != 200 {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Token request failed with both client_secret_basic and client_secret_post: {body}"
+        ));
     }
+
+    debug!("client_secret_post succeeded");
+    resp.text()
+        .await
+        .map_err(|e| format!("Failed to request token from provider: {e}"))
 }
 
 /// Process a successful client credentials token response.
@@ -189,15 +167,8 @@ async fn process_client_credentials_response(
     let token = tokens
         .get("id_token")
         .or_else(|| tokens.get("access_token"))
-        .and_then(|v| v.as_str());
-
-    let token = match token {
-        Some(t) => t,
-        None => {
-            eprintln!("No id_token or access_token in token response");
-            std::process::exit(1);
-        }
-    };
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "No id_token or access_token in token response".to_string())?;
 
     debug!("Token received from client credentials grant");
 
@@ -205,7 +176,7 @@ async fn process_client_credentials_response(
         &config.region,
         &config.role,
         token,
-        config.duration_seconds as i32,
+        config.duration_seconds,
         config.dangerously_log_secrets,
         &oidc_config.issuer,
     )
