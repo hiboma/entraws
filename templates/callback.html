@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Handling OIDC</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #f7f7f5;
+            --fg: #1c1c1c;
+            --muted: #6b6b6b;
+            --rule: #e3e3de;
+            --accent-success: #0f7b4a;
+            --accent-error: #9b1c1c;
+            --accent-processing: #1c1c1c;
+        }
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--fg);
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 15px;
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        body {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 48px 24px;
+        }
+        .card {
+            width: 100%;
+            max-width: 640px;
+            background: #ffffff;
+            border: 1px solid var(--rule);
+            padding: 48px 56px;
+        }
+        .eyebrow {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 13px;
+            font-weight: 500;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin: 0 0 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .eyebrow-mark {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: currentColor;
+            color: #ffffff;
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1;
+        }
+        .eyebrow-mark svg {
+            width: 10px;
+            height: 10px;
+        }
+        .card.success .eyebrow { color: var(--accent-success); }
+        .card.error .eyebrow { color: var(--accent-error); }
+        .card.processing .eyebrow { color: var(--accent-processing); }
+        .card.processing .eyebrow-mark {
+            background: transparent;
+            border: 2px solid currentColor;
+            border-top-color: transparent;
+            animation: spin 0.9s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        h1 {
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-weight: 600;
+            font-size: 22px;
+            line-height: 1.35;
+            margin: 0 0 20px;
+            letter-spacing: -0.01em;
+        }
+        h1 code {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 15px;
+            font-weight: 500;
+            background: #f2f2ee;
+            padding: 2px 6px;
+            word-break: break-all;
+        }
+        p {
+            margin: 0 0 14px;
+            color: #333;
+        }
+        p.muted { color: var(--muted); }
+        code, kbd {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 13px;
+            background: #f2f2ee;
+            padding: 2px 6px;
+            word-break: break-all;
+        }
+        dl {
+            margin: 24px 0 28px;
+            padding: 20px 0;
+            border-top: 1px solid var(--rule);
+            border-bottom: 1px solid var(--rule);
+            display: grid;
+            grid-template-columns: auto 1fr;
+            column-gap: 20px;
+            row-gap: 10px;
+        }
+        dt {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 11px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--muted);
+            padding-top: 2px;
+        }
+        dd {
+            margin: 0;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 13px;
+            word-break: break-all;
+        }
+        hr {
+            border: none;
+            border-top: 1px solid var(--rule);
+            margin: 24px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <div class="card processing">
+            <p class="eyebrow"><span class="eyebrow-mark"></span>Processing</p>
+            <h1>Completing authentication</h1>
+            <p class="muted">Exchanging the authorization response with your identity provider.</p>
+        </div>
+    </div>
+    <script>
+        (function() {
+            function signalAuthFailure(reason) {
+                fetch('/auth/authfail', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: reason })
+                });
+            }
+
+            function escapeHtml(s) {
+                return String(s)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            function render(html) {
+                document.getElementById('root').innerHTML = html;
+            }
+
+            function showError(message) {
+                render(`
+                    <div class="card error">
+                        <p class="eyebrow"><span class="eyebrow-mark">!</span>Failed</p>
+                        <h1>Authentication failed</h1>
+                        <p>${escapeHtml(message)}</p>
+                        <hr>
+                        <p class="muted">Additional debug information from your identity provider may be present in the address bar.</p>
+                        <p class="muted">You may now close this window and try again.</p>
+                    </div>`);
+            }
+
+            function showSuccess() {
+                render(`
+                    <div class="card success">
+                        <p class="eyebrow"><span class="eyebrow-mark">✓</span>Authenticated</p>
+                        <h1>Role assumed successfully</h1>
+                        <p>Your AWS credentials have been written to the profile below.</p>
+                        <dl>
+                            <dt>Role</dt>
+                            <dd>{{role_arn}}</dd>
+                            <dt>File</dt>
+                            <dd>{{aws_config_file}}</dd>
+                            <dt>Profile</dt>
+                            <dd>{{profile_to_update}}</dd>
+                        </dl>
+                        <p>Use this profile with the AWS CLI by passing <code>--profile {{profile_to_update}}</code>.</p>
+                        <p class="muted">For the AWS SDK, refer to your SDK documentation on specifying a named profile. You may now close this window.</p>
+                    </div>`);
+                window.location.hash = '';
+            }
+
+            function handleError(response) {
+                if (!response.ok) {
+                    return response.json().then(errorData => {
+                        throw new Error(errorData.message || 'Authentication failed');
+                    });
+                }
+                return response.json();
+            }
+
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+
+            if (code) {
+                console.log("Detected authorization code flow");
+                const receivedState = urlParams.get('state');
+                if (!receivedState || receivedState !== '{{pkce_state}}') {
+                    showError('Invalid state parameter');
+                    signalAuthFailure('invalid_state');
+                    return;
+                }
+
+                fetch('/process_token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        code: code,
+                        state: receivedState,
+                        grant_type: 'authorization_code'
+                    })
+                })
+                .then(handleError)
+                .then(data => {
+                    if (data.status === 'success') {
+                        showSuccess();
+                    } else {
+                        showError(data.message || 'Unknown error occurred');
+                        signalAuthFailure('unknown_error');
+                    }
+                })
+                .catch(error => {
+                    showError(error.message || 'Failed to process authentication');
+                    signalAuthFailure('unknown_error');
+                });
+            } else {
+                const hash = window.location.hash.substr(1);
+                const result = hash.split('&').reduce((result, item) => {
+                    const [key, value] = item.split('=');
+                    result[key] = decodeURIComponent(value);
+                    return result;
+                }, {});
+
+                if (!result.state || result.state !== '{{pkce_state}}') {
+                    showError('Invalid state parameter');
+                    signalAuthFailure('invalid_state');
+                    return;
+                }
+                if (result.id_token) {
+                    console.log("Detected implicit flow");
+
+                    fetch('/process_token', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            id_token: result.id_token,
+                            state: result.state,
+                            grant_type: 'implicit'
+                        })
+                    })
+                    .then(handleError)
+                    .then(data => {
+                        if (data.status === 'success') {
+                            showSuccess();
+                        } else {
+                            showError(data.message || 'Unknown error occurred');
+                            signalAuthFailure('unknown_error');
+                        }
+                    })
+                    .catch(error => {
+                        showError(error.message || 'Failed to process authentication');
+                        signalAuthFailure('unknown_error');
+                    });
+                } else {
+                    showError('No code or token found in response');
+                    signalAuthFailure('no_token');
+                }
+            }
+        })();
+    </script>
+</body>
+</html>
