@@ -1,0 +1,16 @@
+entraws
+Copyright (c) 2026 hiboma
+
+This project is a Rust reimplementation of awslabs/StsOidcDriver,
+a Python tool for obtaining AWS temporary credentials via OpenID Connect.
+
+Original project:
+  https://github.com/awslabs/StsOidcDriver
+  Copyright (c) Amazon.com, Inc. or its affiliates.
+  Licensed under the Apache License, Version 2.0.
+
+The entraws source code is an independent Rust implementation
+released under the MIT License (see LICENSE). No source code from
+the original project is included; the Rust code was written from
+scratch by referring to the behavior and HTTP protocol described
+in the Python implementation.

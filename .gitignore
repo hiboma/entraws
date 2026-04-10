@@ -1,0 +1,11 @@
+/target
+/.wt
+Cargo.lock.bak
+.env
+.env.*
+!.env.example
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
