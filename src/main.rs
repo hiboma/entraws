@@ -10,7 +10,7 @@ mod token;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
-use tracing::info;
+use tracing::{debug, info};
 
 #[tokio::main]
 async fn main() {
@@ -31,9 +31,9 @@ async fn main() {
         .init();
 
     info!("Starting entraws - AWS STS OIDC Driver");
-    info!("Role ARN: {}", config.role);
-    info!("OpenID URL: {}", config.openid_url);
-    info!("Region: {}", config.region);
+    debug!("Role ARN: {}", config.role);
+    debug!("OpenID URL: {}", config.openid_url);
+    debug!("Region: {}", config.region);
 
     // Fetch OIDC discovery configuration (exits on failure)
     let oidc_config = oidc::get_oidc_config(&config.openid_url).await;

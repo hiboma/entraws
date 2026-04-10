@@ -1,10 +1,11 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_sts::config::Region;
 use aws_types::app_name::AppName;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation};
+use jsonwebtoken::dangerous::insecure_decode;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use tracing::{debug, info};
 
 /// Temporary AWS credentials obtained from STS AssumeRoleWithWebIdentity.
 pub struct StsCredentials {
@@ -30,19 +31,12 @@ pub async fn assume_role_with_token(
     log_secrets: bool,
     expected_issuer: &str,
 ) -> Result<StsCredentials, String> {
-    // Decode JWT without signature verification to extract claims.
-    let mut validation = Validation::new(Algorithm::HS256);
-    validation.set_required_spec_claims::<&str>(&[]);
-    validation.validate_exp = false;
-    validation.validate_aud = false;
-    validation.insecure_disable_signature_validation();
-
-    let token_data = jsonwebtoken::decode::<HashMap<String, serde_json::Value>>(
-        token,
-        &DecodingKey::from_secret(b""),
-        &validation,
-    )
-    .map_err(|e| format!("Failed to decode JWT: {}", e))?;
+    // Decode the JWT without any signature or claim validation. STS performs
+    // the authoritative verification server-side; we only need the claims to
+    // extract `email`/`sub` for RoleSessionName and `iss` for our defensive
+    // issuer check.
+    let token_data = insecure_decode::<HashMap<String, serde_json::Value>>(token)
+        .map_err(|e| format!("Failed to decode JWT: {}", e))?;
 
     let claims = token_data.claims;
 
@@ -198,8 +192,9 @@ pub fn write_credentials(
             .map_err(|e| format!("Failed to write credentials to {}: {}", config_file, e))?;
     }
 
-    println!(
-        "Successfully wrote credentials to profile {} in {}",
+    info!("Credentials written");
+    debug!(
+        "Credentials written to profile {} in {}",
         profile, config_file
     );
 

@@ -173,8 +173,9 @@ async fn callback(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         }}
         .eyebrow {{
             font-family: 'IBM Plex Mono', monospace;
-            font-size: 11px;
-            letter-spacing: 0.12em;
+            font-size: 13px;
+            font-weight: 500;
+            letter-spacing: 0.14em;
             text-transform: uppercase;
             color: var(--muted);
             margin: 0 0 24px;
@@ -182,23 +183,34 @@ async fn callback(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             align-items: center;
             gap: 10px;
         }}
-        .eyebrow::before {{
-            content: '';
-            display: inline-block;
-            width: 8px;
-            height: 8px;
+        .eyebrow-mark {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
             border-radius: 50%;
             background: currentColor;
+            color: #ffffff;
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1;
+        }}
+        .eyebrow-mark svg {{
+            width: 10px;
+            height: 10px;
         }}
         .card.success .eyebrow {{ color: var(--accent-success); }}
         .card.error .eyebrow {{ color: var(--accent-error); }}
         .card.processing .eyebrow {{ color: var(--accent-processing); }}
-        .card.processing .eyebrow::before {{
-            animation: pulse 1.4s ease-in-out infinite;
+        .card.processing .eyebrow-mark {{
+            background: transparent;
+            border: 2px solid currentColor;
+            border-top-color: transparent;
+            animation: spin 0.9s linear infinite;
         }}
-        @keyframes pulse {{
-            0%, 100% {{ opacity: 0.3; }}
-            50% {{ opacity: 1; }}
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
         }}
         h1 {{
             font-family: 'IBM Plex Sans', sans-serif;
@@ -262,7 +274,7 @@ async fn callback(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 <body>
     <div id="root">
         <div class="card processing">
-            <p class="eyebrow">Processing</p>
+            <p class="eyebrow"><span class="eyebrow-mark"></span>Processing</p>
             <h1>Completing authentication</h1>
             <p class="muted">Exchanging the authorization response with your identity provider.</p>
         </div>
@@ -293,7 +305,7 @@ async fn callback(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             function showError(message) {{
                 render(`
                     <div class="card error">
-                        <p class="eyebrow">Failed</p>
+                        <p class="eyebrow"><span class="eyebrow-mark">!</span>Failed</p>
                         <h1>Authentication failed</h1>
                         <p>${{escapeHtml(message)}}</p>
                         <hr>
@@ -305,10 +317,12 @@ async fn callback(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             function showSuccess() {{
                 render(`
                     <div class="card success">
-                        <p class="eyebrow">Authenticated</p>
-                        <h1>Assumed role <code>{role_arn}</code></h1>
+                        <p class="eyebrow"><span class="eyebrow-mark">✓</span>Authenticated</p>
+                        <h1>Role assumed successfully</h1>
                         <p>Your AWS credentials have been written to the profile below.</p>
                         <dl>
+                            <dt>Role</dt>
+                            <dd>{role_arn}</dd>
                             <dt>File</dt>
                             <dd>{aws_config_file}</dd>
                             <dt>Profile</dt>
