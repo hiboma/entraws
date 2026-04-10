@@ -6,8 +6,7 @@ use base64::Engine;
 use rand::RngCore;
 use serde::Deserialize;
 
-const USER_AGENT: &str = "STS OIDC Driver (Rust reqwest)";
-const TIMEOUT_SECS: u64 = 5;
+use crate::constants::{HTTP_TIMEOUT_SECS, USER_AGENT};
 
 // ---------------------------------------------------------------------------
 // OIDC Discovery
@@ -21,7 +20,6 @@ pub struct OidcConfig {
     pub token_endpoint: String,
     #[serde(default)]
     pub registration_endpoint: Option<String>,
-    #[allow(dead_code)]
     pub issuer: String,
 }
 
@@ -36,7 +34,7 @@ pub struct OidcConfig {
 /// ```
 pub async fn get_oidc_config(discovery_url: &str) -> OidcConfig {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .user_agent(USER_AGENT)
         .build()
         .unwrap_or_else(|e| {
@@ -110,7 +108,7 @@ impl DynamicClient {
         );
 
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(TIMEOUT_SECS))
+            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
             .build()
             .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 

@@ -17,13 +17,18 @@ pub struct StsCredentials {
 /// temporary credentials.
 ///
 /// The JWT is decoded without signature verification to extract `email`
-/// (falling back to `sub`) for the RoleSessionName.
+/// (falling back to `sub`) for the RoleSessionName. The `iss` claim is
+/// validated defensively against `expected_issuer` (full string match, as
+/// required by the OIDC specification) before the STS call is made. AWS STS
+/// still performs the authoritative signature and issuer validation when it
+/// receives the token.
 pub async fn assume_role_with_token(
     region: &str,
     role_arn: &str,
     token: &str,
     duration_seconds: i32,
     log_secrets: bool,
+    expected_issuer: &str,
 ) -> Result<StsCredentials, String> {
     // Decode JWT without signature verification to extract claims.
     let mut validation = Validation::new(Algorithm::HS256);
@@ -52,6 +57,26 @@ pub async fn assume_role_with_token(
             claims.get("sub"),
             claims.get("ver"),
         );
+    }
+
+    // Defensive issuer check. AWS STS performs the authoritative signature
+    // and issuer validation; this local check is a belt-and-suspenders
+    // defense that catches tokens from an unexpected issuer before the STS
+    // call is made. OIDC requires an exact string match on `iss`.
+    let actual_iss = claims.get("iss").and_then(|v| v.as_str());
+    match actual_iss {
+        Some(iss) if iss == expected_issuer => {
+            // Matches: continue.
+        }
+        Some(_) => {
+            return Err(format!(
+                "ID token issuer mismatch: expected {}, got {:?}",
+                expected_issuer, actual_iss
+            ));
+        }
+        None => {
+            return Err("ID token has no 'iss' claim".to_string());
+        }
     }
 
     // Use email claim if present, otherwise fall back to sub.
@@ -137,6 +162,21 @@ pub fn write_credentials(
     let mut content: Vec<u8> = Vec::new();
     ini.write_to(&mut content)
         .map_err(|e| format!("Failed to serialize credentials file: {}", e))?;
+
+    // Refuse to follow symbolic links when writing credentials. This is a
+    // lightweight TOCTOU-style hardening: an attacker (or a misplaced symlink)
+    // could otherwise cause credentials to be written through a link to an
+    // unexpected destination. We reject the write rather than try to "fix" it
+    // so the operator can inspect and correct the path explicitly.
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Refusing to write credentials through a symbolic link: {}. \
+                 Remove the symlink or specify a different --aws-config-file.",
+                config_file
+            ));
+        }
+    }
 
     #[cfg(unix)]
     {

@@ -5,12 +5,12 @@ use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tracing::{debug, info};
 
-const PORT: u16 = 6432;
-const REDIRECT_URI: &str = "http://127.0.0.1:6432/callback";
+use crate::constants::{CALLBACK_PORT as PORT, REDIRECT_URI};
 
 /// Shared application state accessible by all route handlers.
 pub struct AppState {
@@ -26,6 +26,7 @@ pub struct AppState {
 struct ProcessTokenRequest {
     code: Option<String>,
     id_token: Option<String>,
+    state: Option<String>,
     #[allow(dead_code)]
     grant_type: Option<String>,
 }
@@ -345,6 +346,7 @@ async fn callback(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
                         code: code,
+                        state: receivedState,
                         grant_type: 'authorization_code'
                     }})
                 }})
@@ -382,6 +384,7 @@ async fn callback(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                         headers: {{ 'Content-Type': 'application/json' }},
                         body: JSON.stringify({{
                             id_token: result.id_token,
+                            state: result.state,
                             grant_type: 'implicit'
                         }})
                     }})
@@ -424,6 +427,26 @@ async fn process_token(
     debug!("Server received request on /process_token");
 
     let config = &state.config;
+
+    // Server-side validation of the `state` parameter. The callback HTML
+    // already validates it in JavaScript, but an attacker who POSTs directly
+    // to /process_token would bypass that check, so we re-validate here
+    // using a constant-time comparison to avoid leaking timing information.
+    let expected_state = state.pkce.state.as_bytes();
+    let state_valid = body
+        .state
+        .as_deref()
+        .map(|s| s.as_bytes().ct_eq(expected_state).into())
+        .unwrap_or(false);
+
+    if !state_valid {
+        info!("state mismatch from /process_token");
+        let response = ApiResponse {
+            status: "error".to_string(),
+            message: Some("Invalid state parameter".to_string()),
+        };
+        return (axum::http::StatusCode::FORBIDDEN, Json(response)).into_response();
+    }
 
     // Determine the id_token either by exchanging a code or using the one provided directly.
     let id_token = if let Some(ref code) = body.code {
@@ -486,6 +509,7 @@ async fn process_token(
         &id_token,
         config.duration_seconds as i32,
         config.dangerously_log_secrets,
+        &state.oidc_config.issuer,
     )
     .await;
 

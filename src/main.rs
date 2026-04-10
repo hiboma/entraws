@@ -1,6 +1,7 @@
 mod aws;
 mod client_credentials;
 mod config;
+mod constants;
 mod oidc;
 mod pkce;
 mod server;
@@ -77,9 +78,9 @@ async fn main() {
         let (listener, app) = server::bind_server(app_state.clone()).await;
 
         // Open browser for authentication (server handles the redirect on GET /)
-        let browser_url = "http://127.0.0.1:6432/";
+        let browser_url = format!("http://127.0.0.1:{}/", constants::CALLBACK_PORT);
         info!("Opening browser for authentication...");
-        if let Err(e) = webbrowser::open(browser_url) {
+        if let Err(e) = webbrowser::open(&browser_url) {
             eprintln!("Error: Failed to open browser: {}", e);
             eprintln!("Please open this URL manually: {}", browser_url);
         }

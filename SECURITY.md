@@ -33,3 +33,22 @@ temporary credentials. Security-relevant areas include:
 We aim to acknowledge reports within five business days and provide an initial
 assessment within ten business days. Public disclosure will be coordinated with
 the reporter.
+
+## JWT Signature Validation
+
+entraws does **not** cryptographically verify the ID token signature itself.
+The security of the token exchange relies on two defenses:
+
+1. **AWS STS performs full signature validation** against the IdP's
+   published JWKS before issuing credentials. A forged ID token cannot
+   reach a successful `AssumeRoleWithWebIdentity` call, because STS
+   itself rejects it. This is the primary defense.
+2. **entraws validates the `iss` claim locally** against the OIDC
+   discovery document's `issuer` field. This catches tokens from an
+   unexpected issuer before the STS call is made.
+
+entraws decodes the JWT locally only to extract the `email` or `sub`
+claim (used as `RoleSessionName`) and the `iss` claim (used for the
+defensive issuer check above). Local signature verification is
+deliberately skipped to avoid duplicating the work that STS performs
+server-side.

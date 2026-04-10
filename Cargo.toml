@@ -25,3 +25,4 @@ clap = { version = "4", features = ["derive"] }
 tower-http = { version = "0.6", features = ["cors"] }
 serde_urlencoded = "0.7"
 rust-ini = "0.21"
+subtle = "2"

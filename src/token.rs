@@ -3,8 +3,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-const USER_AGENT: &str = "STS OIDC Driver (Rust reqwest)";
-const TIMEOUT_SECS: u64 = 5;
+use crate::constants::{HTTP_TIMEOUT_SECS, USER_AGENT};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,7 +58,7 @@ pub async fn exchange_authorization_code(
     code_verifier: &str,
 ) -> Result<TokenResponse, TokenError> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
         .map_err(|e| TokenError::RequestFailed(format!("Failed to build HTTP client: {e}")))?;
 

@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use tracing::debug;
 
-const USER_AGENT: &str = "STS OIDC Driver (Rust reqwest)";
+use crate::constants::{CLIENT_CREDENTIALS_TIMEOUT_SECS, USER_AGENT};
+
 const DEFAULT_SCOPES: &str = "openid email";
 
 /// Handle OAuth client credentials grant. No browser interaction needed.
@@ -45,7 +46,7 @@ pub async fn handle_client_credentials_flow(
     .await;
 
     if let Some(response_text) = basic_result {
-        return process_client_credentials_response(config, &response_text).await;
+        return process_client_credentials_response(config, oidc_config, &response_text).await;
     }
 
     // --- Fall back to client_secret_post (credentials in POST body) ---
@@ -59,7 +60,9 @@ pub async fn handle_client_credentials_flow(
     .await;
 
     match post_result {
-        Some(response_text) => process_client_credentials_response(config, &response_text).await,
+        Some(response_text) => {
+            process_client_credentials_response(config, oidc_config, &response_text).await
+        }
         None => {
             // try_client_secret_post already called eprintln! and exit(1) on failure,
             // so this branch is unreachable in practice.
@@ -84,7 +87,7 @@ async fn try_client_secret_basic(
         .basic_auth(client_id, Some(client_secret))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("User-Agent", USER_AGENT)
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(CLIENT_CREDENTIALS_TIMEOUT_SECS))
         .form(form)
         .send()
         .await;
@@ -140,7 +143,7 @@ async fn try_client_secret_post(
         .post(token_endpoint)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("User-Agent", USER_AGENT)
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(CLIENT_CREDENTIALS_TIMEOUT_SECS))
         .form(&form)
         .send()
         .await;
@@ -176,6 +179,7 @@ async fn try_client_secret_post(
 /// and writes credentials to the configured file.
 async fn process_client_credentials_response(
     config: &crate::config::Config,
+    oidc_config: &crate::oidc::OidcConfig,
     response_body: &str,
 ) -> Result<(), String> {
     let tokens: serde_json::Value = serde_json::from_str(response_body)
@@ -203,6 +207,7 @@ async fn process_client_credentials_response(
         token,
         config.duration_seconds as i32,
         config.dangerously_log_secrets,
+        &oidc_config.issuer,
     )
     .await?;
 
