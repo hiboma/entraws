@@ -104,11 +104,11 @@ pub async fn assume_role_with_token(
             // Unwrap the full error chain so the root cause (STS error code + message)
             // is visible instead of AWS SDK's top-level Display which shows "service error".
             use std::error::Error as _;
-            let mut msg = format!("{}", e);
+            let mut msg = format!("{e}");
             let mut source: Option<&dyn std::error::Error> = e.source();
             while let Some(s) = source {
                 msg.push_str(": ");
-                msg.push_str(&format!("{}", s));
+                msg.push_str(&format!("{s}"));
                 source = s.source();
             }
             Error::Sts(msg)
@@ -201,10 +201,7 @@ pub fn write_credentials(
     }
 
     info!("Credentials written");
-    debug!(
-        "Credentials written to profile {} in {}",
-        profile, config_file
-    );
+    debug!("Credentials written to profile {profile} in {config_file}");
 
     Ok(())
 }

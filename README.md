@@ -46,9 +46,14 @@ The binary is installed to `~/.cargo/bin/entraws`.
 ```sh
 entraws \
   --role "arn:aws:iam::<AWS_ACCOUNT_ID>:role/<ROLE_NAME>" \
-  --openid_url "https://<OIDC_PROVIDER>/<TENANT>/v2.0" \
-  --client_id "<OIDC_CLIENT_ID>"
+  --openid-url "https://<OIDC_PROVIDER>/<TENANT>/v2.0" \
+  --client-id "<OIDC_CLIENT_ID>"
 ```
+
+> **Note**: entraws previously used snake_case CLI option names
+> (`--openid_url`, `--client_id`, `--client_secret`, `--client_credentials`).
+> These remain as hidden aliases for backward compatibility, but the
+> canonical form is now kebab-case.
 
 entraws opens your default browser, directs you to the IdP's sign-in page,
 receives the authorization code on `http://127.0.0.1:6432/callback`, exchanges
@@ -72,8 +77,8 @@ entraws
 ```sh
 entraws -p myprofile \
   --role "arn:aws:iam::<AWS_ACCOUNT_ID>:role/<ROLE_NAME>" \
-  --openid_url "https://<OIDC_PROVIDER>/<TENANT>/v2.0" \
-  --client_id "<OIDC_CLIENT_ID>"
+  --openid-url "https://<OIDC_PROVIDER>/<TENANT>/v2.0" \
+  --client-id "<OIDC_CLIENT_ID>"
 ```
 
 Then use the credentials with the AWS CLI:
@@ -85,11 +90,11 @@ env AWS_PROFILE=myprofile aws sts get-caller-identity
 ### Client Credentials flow (machine-to-machine)
 
 ```sh
-entraws --client_credentials \
+entraws --client-credentials \
   --role "arn:aws:iam::<AWS_ACCOUNT_ID>:role/<ROLE_NAME>" \
-  --openid_url "https://<OIDC_PROVIDER>/<TENANT>/v2.0" \
-  --client_id "<OIDC_CLIENT_ID>" \
-  --client_secret "<OIDC_CLIENT_SECRET>"
+  --openid-url "https://<OIDC_PROVIDER>/<TENANT>/v2.0" \
+  --client-id "<OIDC_CLIENT_ID>" \
+  --client-secret "<OIDC_CLIENT_SECRET>"
 ```
 
 This flow does not open a browser. It requests a token directly from the
@@ -97,12 +102,12 @@ IdP using the client credentials and then calls AWS STS.
 
 ### Dynamic Client Registration
 
-If your IdP supports RFC 7591 Dynamic Client Registration, omit `--client_id`:
+If your IdP supports RFC 7591 Dynamic Client Registration, omit `--client-id`:
 
 ```sh
 entraws \
   --role "arn:aws:iam::<AWS_ACCOUNT_ID>:role/<ROLE_NAME>" \
-  --openid_url "https://<OIDC_PROVIDER>/<TENANT>/v2.0"
+  --openid-url "https://<OIDC_PROVIDER>/<TENANT>/v2.0"
 ```
 
 ## Options
@@ -110,9 +115,9 @@ entraws \
 | Option | Env Variable | Default | Description |
 |---|---|---|---|
 | `--role` | `AWS_ROLE_ARN` | *(required)* | IAM Role ARN to assume |
-| `--openid_url` | `OIDC_DISCOVERY_URL` | *(required)* | OIDC discovery URL |
-| `--client_id` | `OIDC_CLIENT_ID` | *(dynamic registration)* | OIDC Client ID |
-| `--client_secret` | `OIDC_CLIENT_SECRET` | | Client secret (for `--client_credentials`) |
+| `--openid-url` | `OIDC_DISCOVERY_URL` | *(required)* | OIDC discovery URL |
+| `--client-id` | `OIDC_CLIENT_ID` | *(dynamic registration)* | OIDC Client ID |
+| `--client-secret` | `OIDC_CLIENT_SECRET` | | Client secret (for `--client-credentials`) |
 | `--region` | `AWS_REGION` | `us-east-1` | AWS region |
 | `--duration-seconds` | `DURATION_SECONDS` | `3600` | STS credential lifetime |
 | `-p`, `--profile-to-update` | `PROFILE_TO_UPDATE` | `entraws` | Profile name to update |
@@ -121,7 +126,7 @@ entraws \
 | `--debug` | | | Enable verbose logging |
 | `--dangerously-log-secrets` | | | Log identifying JWT claims (iss/aud/sub/ver) at DEBUG level. Implies `--debug`. **Use with extreme care.** |
 | `--implicit` | | | Use the implicit flow (not recommended) |
-| `--client_credentials` | | | Use the client credentials grant |
+| `--client-credentials` | | | Use the client credentials grant |
 
 ## Setting up your OIDC provider
 

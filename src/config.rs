@@ -12,15 +12,15 @@ pub struct CliArgs {
     pub role: Option<String>,
 
     /// OpenID Connect discovery URL (env: OIDC_DISCOVERY_URL)
-    #[arg(long = "openid_url")]
+    #[arg(long = "openid-url", alias = "openid_url")]
     pub openid_url: Option<String>,
 
     /// OIDC Client ID (env: OIDC_CLIENT_ID). If absent, dynamic client registration is used.
-    #[arg(long = "client_id")]
+    #[arg(long = "client-id", alias = "client_id")]
     pub client_id: Option<String>,
 
     /// OIDC Client Secret (env: OIDC_CLIENT_SECRET)
-    #[arg(long = "client_secret")]
+    #[arg(long = "client-secret", alias = "client_secret")]
     pub client_secret: Option<String>,
 
     /// AWS Region (env: AWS_REGION, default: us-east-1)
@@ -54,7 +54,7 @@ pub struct CliArgs {
     pub implicit: bool,
 
     /// Use client_credentials grant instead of browser-based flow
-    #[arg(long = "client_credentials")]
+    #[arg(long = "client-credentials", alias = "client_credentials")]
     pub client_credentials: bool,
 
     /// Custom scopes to request
@@ -101,7 +101,7 @@ impl Config {
             .openid_url
             .or_else(|| env::var("OIDC_DISCOVERY_URL").ok())
             .unwrap_or_else(|| {
-                eprintln!("Error: --openid_url or OIDC_DISCOVERY_URL is required");
+                eprintln!("Error: --openid-url or OIDC_DISCOVERY_URL is required");
                 std::process::exit(1);
             });
 
@@ -172,21 +172,21 @@ impl Config {
         let client_credentials = args.client_credentials;
         let scopes = args.scopes;
 
-        // Validation: --implicit and --client_credentials are mutually exclusive
+        // Validation: --implicit and --client-credentials are mutually exclusive
         if implicit && client_credentials {
-            eprintln!("Error: --implicit and --client_credentials cannot be used together");
+            eprintln!("Error: --implicit and --client-credentials cannot be used together");
             std::process::exit(1);
         }
 
-        // Validation: client_credentials requires client_secret
+        // Validation: client-credentials requires client-secret
         if client_credentials && client_secret.is_none() {
-            eprintln!("Error: --client_credentials requires --client_secret or OIDC_CLIENT_SECRET");
+            eprintln!("Error: --client-credentials requires --client-secret or OIDC_CLIENT_SECRET");
             std::process::exit(1);
         }
 
-        // Validation: client_credentials requires client_id
+        // Validation: client-credentials requires client-id
         if client_credentials && client_id.is_none() {
-            eprintln!("Error: --client_credentials requires --client_id or OIDC_CLIENT_ID");
+            eprintln!("Error: --client-credentials requires --client-id or OIDC_CLIENT_ID");
             std::process::exit(1);
         }
 

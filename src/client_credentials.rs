@@ -91,8 +91,7 @@ async fn try_client_secret_basic(
                     Ok(body) => Some(body),
                     Err(e) => {
                         debug!(
-                            "client_secret_basic response read failed: {}, falling back to client_secret_post",
-                            e
+                            "client_secret_basic response read failed: {e}, falling back to client_secret_post"
                         );
                         None
                     }
@@ -106,10 +105,7 @@ async fn try_client_secret_basic(
             }
         }
         Err(e) => {
-            debug!(
-                "client_secret_basic request failed: {}, falling back to client_secret_post",
-                e
-            );
+            debug!("client_secret_basic request failed: {e}, falling back to client_secret_post");
             None
         }
     }

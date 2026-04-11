@@ -50,7 +50,7 @@ pub async fn get_oidc_config(discovery_url: &str) -> Result<OidcConfig> {
             source,
         })?;
 
-    tracing::debug!("OIDC configuration received: {:?}", config);
+    tracing::debug!("OIDC configuration received: {config:?}");
     Ok(config)
 }
 
@@ -83,10 +83,7 @@ impl DynamicClient {
         registration_endpoint: &str,
         redirect_uri: &str,
     ) -> Result<String> {
-        tracing::debug!(
-            "Starting client registration at endpoint: {}",
-            registration_endpoint
-        );
+        tracing::debug!("Starting client registration at endpoint: {registration_endpoint}");
 
         let client_name_randomness = generate_random_suffix();
         let registration_data = serde_json::json!({
@@ -117,7 +114,7 @@ impl DynamicClient {
             .map_err(|e| Error::DynamicRegistration(format!("request failed: {e}")))?;
 
         let status = response.status();
-        tracing::debug!("Registration response status: {}", status);
+        tracing::debug!("Registration response status: {status}");
 
         let response_json: serde_json::Value = response.json().await.map_err(|_| {
             Error::DynamicRegistration("Failed registering dynamic client".to_string())
@@ -137,11 +134,11 @@ impl DynamicClient {
                 })?
                 .to_string();
 
-            tracing::debug!("Successfully registered client with ID: {}", client_id);
+            tracing::debug!("Successfully registered client with ID: {client_id}");
             self.client_id = Some(client_id.clone());
             Ok(client_id)
         } else {
-            tracing::debug!("Registration failed with status {}", status);
+            tracing::debug!("Registration failed with status {status}");
             Err(Error::DynamicRegistration(format!(
                 "Registration failed with status {status}"
             )))

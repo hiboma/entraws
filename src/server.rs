@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::constants::{CALLBACK_PORT as PORT, REDIRECT_URI};
 use crate::error::Error;
@@ -51,6 +51,26 @@ struct AuthFailRequest {
     reason: Option<String>,
 }
 
+/// Resolve the OIDC scopes to request based on configuration.
+///
+/// Okta's native client flow requires `offline_access` in addition to
+/// `openid email` to return a refresh-capable ID token; every other provider
+/// uses the operator-supplied `--scopes`, falling back to `"openid email"`.
+fn resolve_scopes(config: &crate::config::Config) -> String {
+    if !config.is_dynamic_client
+        && !config.implicit
+        && config.openid_url.to_lowercase().contains("okta.com")
+    {
+        debug!("Okta native client detected, setting scopes to openid email offline_access");
+        return "openid email offline_access".to_string();
+    }
+
+    config
+        .scopes
+        .clone()
+        .unwrap_or_else(|| "openid email".to_string())
+}
+
 /// GET / — Start the OIDC flow by redirecting to the IdP's authorization endpoint.
 async fn home(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     debug!("Server received request on \"/\"");
@@ -59,26 +79,14 @@ async fn home(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let oidc_config = &state.oidc_config;
     let pkce = &state.pkce;
 
-    // スコープ決定
-    let scopes = if !config.is_dynamic_client
-        && !config.implicit
-        && config.openid_url.to_lowercase().contains("okta.com")
-    {
-        debug!("Okta native client detected, setting scopes to openid email offline_access");
-        "openid email offline_access".to_string()
-    } else {
-        config
-            .scopes
-            .clone()
-            .unwrap_or_else(|| "openid email".to_string())
-    };
+    // Resolve the OIDC scopes to request.
+    let scopes = resolve_scopes(config);
 
-    // client_id と response_type を分岐で決定
+    // Decide the client_id and response_type based on flow type.
     let (client_id, response_type) = if config.is_dynamic_client {
-        // Dynamic client registration
         debug!("We believe this is a dynamic client using authz code flow");
-        let id = if let Some(ref ep) = oidc_config.registration_endpoint {
-            match crate::oidc::register_dynamic_client(ep, REDIRECT_URI).await {
+        let id = match oidc_config.registration_endpoint.as_deref() {
+            Some(ep) => match crate::oidc::register_dynamic_client(ep, REDIRECT_URI).await {
                 Ok(id) => {
                     // `set` only fails if the value was already initialised;
                     // we intentionally ignore that case (idempotent write).
@@ -86,12 +94,14 @@ async fn home(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     id
                 }
                 Err(e) => {
-                    info!("{}", e);
+                    // Dynamic registration failure leaves client_id empty; the
+                    // IdP will typically reject the authorization request, so
+                    // this is a warning rather than an info-level event.
+                    warn!("Dynamic client registration failed: {e}");
                     String::new()
                 }
-            }
-        } else {
-            String::new()
+            },
+            None => String::new(),
         };
         (id, "code")
     } else if config.implicit {
@@ -108,7 +118,7 @@ async fn home(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         )
     };
 
-    // 共通パラメータ構築
+    // Build the shared query parameter list.
     let params = [
         ("client_id", client_id.as_str()),
         ("response_type", response_type),
@@ -257,7 +267,7 @@ async fn process_token(
             Json(response).into_response()
         }
         Err(e) => {
-            info!("/process_token failed: {}", e);
+            info!("/process_token failed: {e}");
             let status = status_for_error(&e);
             // Matches the previous behavior: notify shutdown only for
             // AssumeRoleWithWebIdentity failures (Sts / NoStsCredentials /
@@ -293,7 +303,7 @@ async fn auth_failure(
 
     match body.reason {
         Some(ref reason) => {
-            info!("Requested by front end to shutdown for: {}", reason);
+            info!("Requested by front end to shutdown for: {reason}");
         }
         None => {
             info!("Received request to terminate from frontend, no reason received");
@@ -322,12 +332,12 @@ pub async fn bind_server(state: Arc<AppState>) -> (TcpListener, Router) {
         .route("/auth/authfail", post(auth_failure))
         .with_state(state);
 
-    let addr = format!("127.0.0.1:{}", PORT);
-    info!("Binding server on {}", addr);
+    let addr = format!("127.0.0.1:{PORT}");
+    info!("Binding server on {addr}");
 
     let listener = TcpListener::bind(&addr)
         .await
-        .unwrap_or_else(|e| panic!("Failed to bind to {}: {}", addr, e));
+        .unwrap_or_else(|e| panic!("Failed to bind to {addr}: {e}"));
 
     (listener, app)
 }
@@ -343,6 +353,6 @@ pub async fn serve(listener: TcpListener, app: Router, shutdown_notify: Arc<Noti
         })
         .await
         .unwrap_or_else(|e| {
-            info!("Server error: {}", e);
+            info!("Server error: {e}");
         });
 }

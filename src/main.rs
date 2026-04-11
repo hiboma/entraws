@@ -44,7 +44,7 @@ async fn main() {
     let oidc_config = match oidc::get_oidc_config(&config.openid_url).await {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
     };
@@ -57,7 +57,7 @@ async fn main() {
                 info!("Client credentials flow completed successfully");
             }
             Err(e) => {
-                eprintln!("Error: Client credentials flow failed: {}", e);
+                eprintln!("Error: Client credentials flow failed: {e}");
                 std::process::exit(1);
             }
         }
@@ -68,7 +68,7 @@ async fn main() {
         } else {
             "authorization_code"
         };
-        info!("Using {} flow", flow_type);
+        info!("Using {flow_type} flow");
 
         // Generate PKCE parameters
         let pkce_params = pkce::PkceParams::generate();
@@ -92,8 +92,8 @@ async fn main() {
         let browser_url = format!("http://127.0.0.1:{}/", constants::CALLBACK_PORT);
         info!("Opening browser for authentication...");
         if let Err(e) = webbrowser::open(&browser_url) {
-            eprintln!("Error: Failed to open browser: {}", e);
-            eprintln!("Please open this URL manually: {}", browser_url);
+            eprintln!("Error: Failed to open browser: {e}");
+            eprintln!("Please open this URL manually: {browser_url}");
         }
 
         // Run the server with a 2-minute wall-clock timeout
