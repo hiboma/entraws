@@ -205,3 +205,133 @@ pub fn write_credentials(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for [`write_credentials`]. All file operations use
+    //! [`tempfile::TempDir`] to keep the host's `~/.aws/credentials`
+    //! untouched even if the test binary is run with a real HOME.
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_credentials() -> StsCredentials {
+        StsCredentials {
+            access_key_id: "AKIA_TEST".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: "token".to_string(),
+        }
+    }
+
+    #[test]
+    fn write_credentials_creates_new_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("credentials");
+        let path_str = path.to_str().unwrap();
+
+        write_credentials(&make_credentials(), path_str, "entraws").expect("should write");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[entraws]"));
+        assert!(
+            content.contains("aws_access_key_id=AKIA_TEST")
+                || content.contains("aws_access_key_id = AKIA_TEST")
+        );
+        assert!(content.contains("secret"));
+        assert!(content.contains("token"));
+    }
+
+    #[test]
+    fn write_credentials_preserves_other_profiles() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("credentials");
+        std::fs::write(
+            &path,
+            "[other]\naws_access_key_id=EXISTING\naws_secret_access_key=other-secret\n",
+        )
+        .unwrap();
+
+        write_credentials(&make_credentials(), path.to_str().unwrap(), "entraws")
+            .expect("should write");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[other]"));
+        assert!(content.contains("EXISTING"));
+        assert!(content.contains("other-secret"));
+        assert!(content.contains("[entraws]"));
+        assert!(content.contains("AKIA_TEST"));
+    }
+
+    #[test]
+    fn write_credentials_overwrites_existing_profile() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("credentials");
+        std::fs::write(
+            &path,
+            "[entraws]\naws_access_key_id=OLD_KEY\naws_secret_access_key=old-secret\naws_session_token=old-token\n",
+        )
+        .unwrap();
+
+        write_credentials(&make_credentials(), path.to_str().unwrap(), "entraws")
+            .expect("should write");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[entraws]"));
+        assert!(content.contains("AKIA_TEST"));
+        assert!(
+            !content.contains("OLD_KEY"),
+            "old access key should have been replaced, got:\n{content}"
+        );
+        assert!(
+            !content.contains("old-secret"),
+            "old secret should have been replaced, got:\n{content}"
+        );
+    }
+
+    #[test]
+    fn write_credentials_creates_parent_directory() {
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("nested").join("dir").join("credentials");
+
+        write_credentials(&make_credentials(), nested.to_str().unwrap(), "entraws")
+            .expect("should create parent directories");
+
+        assert!(nested.exists(), "credentials file should exist after write");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_credentials_sets_0600_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("credentials");
+
+        write_credentials(&make_credentials(), path.to_str().unwrap(), "entraws").unwrap();
+
+        let meta = std::fs::metadata(&path).unwrap();
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0o600, got {mode:o}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_credentials_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("target");
+        // The target must be parseable as an INI file because
+        // write_credentials loads it before the symlink check. Use an
+        // empty file so the INI parser accepts it.
+        std::fs::write(&target, "").unwrap();
+        let link = dir.path().join("link");
+        symlink(&target, &link).unwrap();
+
+        let err = write_credentials(&make_credentials(), link.to_str().unwrap(), "entraws")
+            .expect_err("should reject symlink");
+        match err {
+            Error::SymlinkRejected(p) => {
+                assert_eq!(p, link);
+            }
+            other => panic!("expected SymlinkRejected, got {other:?}"),
+        }
+    }
+}

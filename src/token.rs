@@ -114,3 +114,104 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    //! End-to-end tests for [`exchange_authorization_code`] backed by a
+    //! local [`wiremock`] server. Covers the happy path, server-side
+    //! failures, and partial response bodies.
+    use super::*;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn exchange_authorization_code_returns_tokens_on_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(header("Content-Type", "application/x-www-form-urlencoded"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id_token": "eyJ.fake.idtoken",
+                "access_token": "fake-access-token"
+            })))
+            .mount(&server)
+            .await;
+
+        let endpoint = format!("{}/token", server.uri());
+        let resp = exchange_authorization_code(
+            &endpoint,
+            "authcode",
+            "http://127.0.0.1:6432/callback",
+            "client-abc",
+            "verifier-xyz",
+        )
+        .await
+        .expect("should succeed");
+
+        assert_eq!(resp.id_token.as_deref(), Some("eyJ.fake.idtoken"));
+        assert_eq!(resp.access_token.as_deref(), Some("fake-access-token"));
+    }
+
+    #[tokio::test]
+    async fn exchange_authorization_code_accepts_access_token_only() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "fake-access-token"
+            })))
+            .mount(&server)
+            .await;
+
+        let endpoint = format!("{}/token", server.uri());
+        let resp = exchange_authorization_code(
+            &endpoint,
+            "authcode",
+            "http://127.0.0.1:6432/callback",
+            "client-abc",
+            "verifier-xyz",
+        )
+        .await
+        .expect("should succeed");
+
+        // `id_token` is optional in the response struct because some
+        // providers only return an access token; the struct tolerates both.
+        assert!(resp.id_token.is_none());
+        assert_eq!(resp.access_token.as_deref(), Some("fake-access-token"));
+    }
+
+    #[tokio::test]
+    async fn exchange_authorization_code_fails_on_400_with_error_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_string(
+                    r#"{"error":"invalid_grant","error_description":"code expired"}"#,
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let endpoint = format!("{}/token", server.uri());
+        let err = exchange_authorization_code(
+            &endpoint,
+            "authcode",
+            "http://127.0.0.1:6432/callback",
+            "client-abc",
+            "verifier-xyz",
+        )
+        .await
+        .expect_err("should fail");
+
+        match err {
+            Error::TokenRequest(msg) => {
+                assert!(
+                    msg.contains("invalid_grant") && msg.contains("code expired"),
+                    "error message should surface OIDC provider body, got: {msg}"
+                );
+            }
+            other => panic!("expected TokenRequest, got {other:?}"),
+        }
+    }
+}

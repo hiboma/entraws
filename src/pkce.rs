@@ -82,6 +82,19 @@ mod tests {
         assert_eq!(params.code_challenge, expected_challenge);
     }
 
+    /// Verifies `compute_code_challenge` against the worked example in
+    /// RFC 7636 Appendix B. The verifier/challenge pair there is the
+    /// canonical conformance vector for S256 transformations, so any
+    /// deviation would break interoperability with compliant OIDC/OAuth
+    /// providers.
+    #[test]
+    fn test_s256_matches_rfc7636_example() {
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let expected_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+        let actual = compute_code_challenge(verifier);
+        assert_eq!(actual, expected_challenge);
+    }
+
     #[test]
     fn test_code_challenge_no_padding() {
         let params = PkceParams::generate();

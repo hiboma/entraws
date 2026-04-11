@@ -22,3 +22,22 @@ pub fn shared_client() -> reqwest::Client {
         })
         .clone()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Smoke test: calling [`shared_client`] twice must succeed and must not
+    /// panic. We do not assert pointer equality because `reqwest::Client`
+    /// clones return a new `Client` wrapper around the same `Arc`-backed
+    /// inner state; the important invariant is that the builder panic in
+    /// `get_or_init` never triggers in practice.
+    #[test]
+    fn shared_client_returns_without_panic() {
+        let c1 = shared_client();
+        let c2 = shared_client();
+        // Silence unused-variable warnings while keeping the handles alive
+        // so the test exercises the clone path as well.
+        let _ = (c1, c2);
+    }
+}
