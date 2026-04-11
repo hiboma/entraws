@@ -202,3 +202,84 @@ mod tests {
         assert_ne!(a, b);
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    //! End-to-end tests for [`get_oidc_config`] that exercise the HTTP code path
+    //! against a local [`wiremock`] server. These complement the unit tests
+    //! above by covering success and failure modes of the real reqwest client
+    //! without relying on an external OIDC provider.
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn get_oidc_config_parses_valid_response() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+            "registration_endpoint": "https://auth.example.com/register",
+            "issuer": "https://auth.example.com/"
+        });
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/.well-known/openid-configuration", server.uri());
+        let config = get_oidc_config(&url).await.expect("should succeed");
+
+        assert_eq!(
+            config.authorization_endpoint,
+            "https://auth.example.com/authorize"
+        );
+        assert_eq!(config.token_endpoint, "https://auth.example.com/token");
+        assert_eq!(
+            config.registration_endpoint.as_deref(),
+            Some("https://auth.example.com/register")
+        );
+        assert_eq!(config.issuer, "https://auth.example.com/");
+    }
+
+    #[tokio::test]
+    async fn get_oidc_config_returns_error_on_404() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/.well-known/openid-configuration", server.uri());
+        let err = get_oidc_config(&url).await.expect_err("should fail");
+        // A 404 body is not valid JSON for OidcConfig, so we fall through to
+        // the JSON decode step which surfaces as OidcDiscoveryParse. That is
+        // the documented behavior: both network and decode errors are reported
+        // with the offending URL so the operator can investigate.
+        match err {
+            Error::OidcDiscoveryParse { url: u, .. } => assert!(u.contains("/.well-known/")),
+            other => panic!("expected OidcDiscoveryParse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_oidc_config_rejects_empty_json_object() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/.well-known/openid-configuration", server.uri());
+        let err = get_oidc_config(&url).await.expect_err("should fail");
+        // `authorization_endpoint` is required, so serde rejects the empty
+        // object. This guards against a silently-unconfigured provider.
+        match err {
+            Error::OidcDiscoveryParse { url: u, .. } => assert!(u.contains("/.well-known/")),
+            other => panic!("expected OidcDiscoveryParse, got {other:?}"),
+        }
+    }
+}

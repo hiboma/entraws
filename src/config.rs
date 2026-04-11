@@ -208,3 +208,102 @@ impl Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for [`CliArgs`] parsing. These do not exercise
+    //! [`Config::parse_and_resolve`] because that function reads process
+    //! environment variables and calls `std::process::exit(1)` on error,
+    //! neither of which is compatible with an in-process test harness.
+    //! Covering the raw clap surface is enough to catch argument renames
+    //! and alias regressions.
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn cli_accepts_kebab_case_long_options() {
+        let args = CliArgs::try_parse_from([
+            "entraws",
+            "--role",
+            "arn:aws:iam::123456789012:role/test",
+            "--openid-url",
+            "https://idp.example.com/",
+            "--client-id",
+            "my-client",
+        ])
+        .expect("parse should succeed");
+        assert_eq!(
+            args.role.as_deref(),
+            Some("arn:aws:iam::123456789012:role/test")
+        );
+        assert_eq!(args.openid_url.as_deref(), Some("https://idp.example.com/"));
+        assert_eq!(args.client_id.as_deref(), Some("my-client"));
+    }
+
+    #[test]
+    fn cli_accepts_snake_case_aliases_for_backward_compatibility() {
+        // The original Python CLI used snake_case flags; the Rust port
+        // advertises kebab-case but keeps snake_case as aliases so existing
+        // shell scripts and CI jobs continue to work.
+        let args = CliArgs::try_parse_from([
+            "entraws",
+            "--role",
+            "arn:aws:iam::123456789012:role/test",
+            "--openid_url",
+            "https://idp.example.com/",
+            "--client_id",
+            "my-client",
+            "--client_secret",
+            "s3cr3t",
+        ])
+        .expect("parse should succeed");
+        assert_eq!(args.openid_url.as_deref(), Some("https://idp.example.com/"));
+        assert_eq!(args.client_id.as_deref(), Some("my-client"));
+        assert_eq!(args.client_secret.as_deref(), Some("s3cr3t"));
+    }
+
+    #[test]
+    fn cli_defaults_are_none_or_false() {
+        let args = CliArgs::try_parse_from(["entraws"]).expect("parse should succeed");
+        assert!(args.role.is_none());
+        assert!(args.openid_url.is_none());
+        assert!(args.client_id.is_none());
+        assert!(args.client_secret.is_none());
+        assert!(args.region.is_none());
+        assert!(args.duration_seconds.is_none());
+        assert!(args.profile_to_update.is_none());
+        assert!(args.aws_config_file.is_none());
+        assert!(!args.debug);
+        assert!(!args.dangerously_log_secrets);
+        assert!(!args.implicit);
+        assert!(!args.client_credentials);
+        assert!(args.scopes.is_none());
+    }
+
+    #[test]
+    fn cli_accepts_boolean_flags() {
+        let args = CliArgs::try_parse_from([
+            "entraws",
+            "--debug",
+            "--dangerously-log-secrets",
+            "--implicit",
+        ])
+        .expect("parse should succeed");
+        assert!(args.debug);
+        assert!(args.dangerously_log_secrets);
+        assert!(args.implicit);
+    }
+
+    #[test]
+    fn cli_accepts_short_profile_flag() {
+        let args =
+            CliArgs::try_parse_from(["entraws", "-p", "my-profile"]).expect("parse should succeed");
+        assert_eq!(args.profile_to_update.as_deref(), Some("my-profile"));
+    }
+
+    #[test]
+    fn cli_rejects_unknown_flag() {
+        let result = CliArgs::try_parse_from(["entraws", "--not-a-real-flag"]);
+        assert!(result.is_err(), "unknown flag should fail to parse");
+    }
+}
