@@ -5,10 +5,11 @@ use sha2::{Digest, Sha256};
 
 /// PKCE (Proof Key for Code Exchange) parameters for the OAuth 2.0 authorization code flow.
 ///
-/// Matches the Python implementation:
+/// Values follow RFC 7636 with a comfortable margin above the minimum:
 /// - `state`: 32 random bytes, base64url encoded without padding
 /// - `nonce`: 16 random bytes, base64url encoded without padding
-/// - `code_verifier`: 32 random bytes, base64url encoded without padding
+/// - `code_verifier`: 48 random bytes, base64url encoded without padding (64 characters,
+///   well above the RFC 7636 minimum of 43)
 /// - `code_challenge`: SHA-256 hash of `code_verifier`, base64url encoded without padding
 pub struct PkceParams {
     pub state: String,
@@ -22,7 +23,7 @@ impl PkceParams {
     pub fn generate() -> Self {
         let state = generate_token(32);
         let nonce = generate_token(16);
-        let code_verifier = generate_token(32);
+        let code_verifier = generate_token(48);
         let code_challenge = compute_code_challenge(&code_verifier);
 
         Self {
@@ -65,8 +66,8 @@ mod tests {
         assert_eq!(params.state.len(), 43);
         // 16 bytes base64url-encoded without padding = 22 characters
         assert_eq!(params.nonce.len(), 22);
-        // 32 bytes base64url-encoded without padding = 43 characters
-        assert_eq!(params.code_verifier.len(), 43);
+        // 48 bytes base64url-encoded without padding = 64 characters
+        assert_eq!(params.code_verifier.len(), 64);
         // SHA-256 digest is 32 bytes, base64url-encoded without padding = 43 characters
         assert_eq!(params.code_challenge.len(), 43);
     }
@@ -118,7 +119,7 @@ mod tests {
         if remainder == 0 {
             s.to_string()
         } else {
-            format!("{}{}", s, "=".repeat(4 - remainder))
+            format!("{s}{}", "=".repeat(4 - remainder))
         }
     }
 }
