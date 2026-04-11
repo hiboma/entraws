@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -11,6 +12,7 @@ use tokio::sync::Notify;
 use tracing::{debug, info};
 
 use crate::constants::{CALLBACK_PORT as PORT, REDIRECT_URI};
+use crate::error::Error;
 
 /// Shared application state accessible by all route handlers.
 pub struct AppState {
@@ -84,7 +86,7 @@ async fn home(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     id
                 }
                 Err(e) => {
-                    info!("Dynamic client registration failed: {}", e);
+                    info!("{}", e);
                     String::new()
                 }
             }
@@ -142,13 +144,13 @@ async fn callback(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Html(html)
 }
 
-/// POST /process_token — Exchange authorization code or implicit token for AWS credentials.
-async fn process_token(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<ProcessTokenRequest>,
-) -> impl IntoResponse {
-    debug!("Server received request on /process_token");
-
+/// Core logic of `/process_token`: does everything that can fail with a typed
+/// [`Error`], and leaves HTTP-status decisions to the outer handler so the
+/// mapping from error kind to status code is centralized.
+async fn process_token_inner(
+    state: &Arc<AppState>,
+    body: ProcessTokenRequest,
+) -> Result<(), Error> {
     let config = &state.config;
 
     // Server-side validation of the `state` parameter. The callback HTML
@@ -163,12 +165,7 @@ async fn process_token(
         .unwrap_or(false);
 
     if !state_valid {
-        info!("state mismatch from /process_token");
-        let response = ApiResponse {
-            status: "error".to_string(),
-            message: Some("Invalid state parameter".to_string()),
-        };
-        return (axum::http::StatusCode::FORBIDDEN, Json(response)).into_response();
+        return Err(Error::InvalidState);
     }
 
     // Determine the id_token either by exchanging a code or using the one provided directly.
@@ -186,46 +183,30 @@ async fn process_token(
             config.client_id.clone().unwrap_or_default()
         };
 
-        match crate::token::exchange_authorization_code(
+        let token_response = crate::token::exchange_authorization_code(
             &state.oidc_config.token_endpoint,
             code,
             REDIRECT_URI,
             &client_id,
             &state.pkce.code_verifier,
         )
-        .await
-        {
-            Ok(token_response) => {
-                debug!("Received id_token from token exchange");
-                token_response.id_token.unwrap_or_default()
-            }
-            Err(e) => {
-                info!("Token exchange failed: {}", e);
-                let response = ApiResponse {
-                    status: "error".to_string(),
-                    message: Some(format!(
-                        "Acquiring tokens from OpenID Provider Failed: {}",
-                        e
-                    )),
-                };
-                return (axum::http::StatusCode::BAD_REQUEST, Json(response)).into_response();
-            }
-        }
+        .await?;
+
+        debug!("Received id_token from token exchange");
+        token_response.id_token.ok_or(Error::MissingIdToken)?
     } else if let Some(ref token) = body.id_token {
         debug!("/process_token is handling an implicit flow request");
         debug!("Received id_token from implicit flow");
         token.clone()
     } else {
         debug!("no id_token or code found in the post to /process_token");
-        let response = ApiResponse {
-            status: "error".to_string(),
-            message: Some("No code or id_token provided".to_string()),
-        };
-        return (axum::http::StatusCode::BAD_REQUEST, Json(response)).into_response();
+        return Err(Error::TokenRequest(
+            "No code or id_token provided".to_string(),
+        ));
     };
 
     // Assume role with the id_token.
-    let assume_result = crate::aws::assume_role_with_token(
+    let credentials = crate::aws::assume_role_with_token(
         &config.region,
         &config.role,
         &id_token,
@@ -233,45 +214,74 @@ async fn process_token(
         config.dangerously_log_secrets,
         &state.oidc_config.issuer,
     )
-    .await;
-
-    let credentials = match assume_result {
-        Ok(creds) => creds,
-        Err(e) => {
-            info!("Failed to assume role: {}", e);
-            state.shutdown_notify.notify_one();
-            let response = ApiResponse {
-                status: "error".to_string(),
-                message: Some(format!("Failed to assume role with web identity: {}", e)),
-            };
-            return (axum::http::StatusCode::BAD_REQUEST, Json(response)).into_response();
-        }
-    };
+    .await?;
 
     // Write the credentials to the AWS config file.
     let config_file_str = config.aws_config_file.display().to_string();
-    if let Err(e) =
-        crate::aws::write_credentials(&credentials, &config_file_str, &config.profile_to_update)
-    {
-        info!("Failed to write credentials: {}", e);
-        let response = ApiResponse {
-            status: "error".to_string(),
-            message: Some(format!("Failed to write credentials: {}", e)),
-        };
-        return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(response),
-        )
-            .into_response();
+    crate::aws::write_credentials(&credentials, &config_file_str, &config.profile_to_update)?;
+
+    Ok(())
+}
+
+/// Map a crate [`Error`] to an HTTP status code. Anything caused by bad
+/// request input gets 400, `InvalidState` gets 403 (same as the old hand-
+/// written path), and filesystem/credential write errors are 500. Everything
+/// else is surfaced as 400 to avoid leaking details.
+fn status_for_error(err: &Error) -> StatusCode {
+    match err {
+        Error::InvalidState => StatusCode::FORBIDDEN,
+        Error::WriteCredentials { .. }
+        | Error::ReadCredentials { .. }
+        | Error::ParseCredentialsIni { .. }
+        | Error::SerializeCredentials(_)
+        | Error::SymlinkRejected(_)
+        | Error::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::BAD_REQUEST,
     }
+}
 
-    state.shutdown_notify.notify_one();
+/// POST /process_token — Exchange authorization code or implicit token for AWS credentials.
+async fn process_token(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ProcessTokenRequest>,
+) -> impl IntoResponse {
+    debug!("Server received request on /process_token");
 
-    let response = ApiResponse {
-        status: "success".to_string(),
-        message: None,
-    };
-    Json(response).into_response()
+    match process_token_inner(&state, body).await {
+        Ok(()) => {
+            state.shutdown_notify.notify_one();
+            let response = ApiResponse {
+                status: "success".to_string(),
+                message: None,
+            };
+            Json(response).into_response()
+        }
+        Err(e) => {
+            info!("/process_token failed: {}", e);
+            let status = status_for_error(&e);
+            // Matches the previous behavior: notify shutdown only for
+            // AssumeRoleWithWebIdentity failures (Sts / NoStsCredentials /
+            // MissingIssuer / IssuerMismatch / NoRoleSessionName / JwtDecode).
+            // InvalidState, token exchange, and write-credentials failures
+            // leave the server running.
+            if matches!(
+                e,
+                Error::Sts(_)
+                    | Error::NoStsCredentials
+                    | Error::MissingIssuer
+                    | Error::IssuerMismatch { .. }
+                    | Error::NoRoleSessionName
+                    | Error::JwtDecode(_)
+            ) {
+                state.shutdown_notify.notify_one();
+            }
+            let response = ApiResponse {
+                status: "error".to_string(),
+                message: Some(e.to_string()),
+            };
+            (status, Json(response)).into_response()
+        }
+    }
 }
 
 /// POST /auth/authfail — Log the failure and signal shutdown.

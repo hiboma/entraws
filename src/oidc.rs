@@ -1,4 +1,3 @@
-use std::process;
 use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -7,6 +6,7 @@ use rand::RngCore;
 use serde::Deserialize;
 
 use crate::constants::HTTP_TIMEOUT_SECS;
+use crate::error::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // OIDC Discovery
@@ -25,14 +25,11 @@ pub struct OidcConfig {
 
 /// Fetches and deserializes the OpenID Connect discovery document.
 ///
-/// On any failure (network error, non-2xx status, JSON parse error), prints
-/// a message to stderr and exits the process, matching the Python behavior:
-/// ```python
-/// except Exception as e:
-///     logger.error(f"Failed to get OIDC configuration from {OIDC_DISCOVERY_URL} ...")
-///     sys.exit("Issue communicated with OIDC provider. ...")
-/// ```
-pub async fn get_oidc_config(discovery_url: &str) -> OidcConfig {
+/// On any failure (network error, non-2xx status, JSON parse error), returns
+/// an [`Error::OidcDiscovery`] or [`Error::OidcDiscoveryParse`] so the caller
+/// can decide how to surface the problem. The Python original exited directly;
+/// `main.rs` restores that behavior by matching on the returned `Result`.
+pub async fn get_oidc_config(discovery_url: &str) -> Result<OidcConfig> {
     let client = crate::http::shared_client();
 
     let response = client
@@ -40,18 +37,21 @@ pub async fn get_oidc_config(discovery_url: &str) -> OidcConfig {
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .send()
         .await
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to get OIDC configuration from {discovery_url} with error {e}");
-            process::exit(1);
-        });
+        .map_err(|source| Error::OidcDiscovery {
+            url: discovery_url.to_string(),
+            source,
+        })?;
 
-    let config: OidcConfig = response.json().await.unwrap_or_else(|e| {
-        eprintln!("Failed to parse OIDC configuration from {discovery_url} with error {e}");
-        process::exit(1);
-    });
+    let config: OidcConfig = response
+        .json()
+        .await
+        .map_err(|source| Error::OidcDiscoveryParse {
+            url: discovery_url.to_string(),
+            source,
+        })?;
 
     tracing::debug!("OIDC configuration received: {:?}", config);
-    config
+    Ok(config)
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ impl DynamicClient {
         &mut self,
         registration_endpoint: &str,
         redirect_uri: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String> {
         tracing::debug!(
             "Starting client registration at endpoint: {}",
             registration_endpoint
@@ -114,15 +114,14 @@ impl DynamicClient {
             .json(&registration_data)
             .send()
             .await
-            .map_err(|e| format!("Exception during registration: {e}"))?;
+            .map_err(|e| Error::DynamicRegistration(format!("request failed: {e}")))?;
 
         let status = response.status();
         tracing::debug!("Registration response status: {}", status);
 
-        let response_json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|_| "Failed registering dynamic client".to_string())?;
+        let response_json: serde_json::Value = response.json().await.map_err(|_| {
+            Error::DynamicRegistration("Failed registering dynamic client".to_string())
+        })?;
 
         tracing::debug!("Response body:");
         tracing::debug!(
@@ -133,7 +132,9 @@ impl DynamicClient {
         if status.as_u16() == 201 {
             let client_id = response_json["client_id"]
                 .as_str()
-                .ok_or_else(|| "No client_id in registration response".to_string())?
+                .ok_or_else(|| {
+                    Error::DynamicRegistration("No client_id in registration response".to_string())
+                })?
                 .to_string();
 
             tracing::debug!("Successfully registered client with ID: {}", client_id);
@@ -141,7 +142,9 @@ impl DynamicClient {
             Ok(client_id)
         } else {
             tracing::debug!("Registration failed with status {}", status);
-            Err(format!("Registration failed with status {status}"))
+            Err(Error::DynamicRegistration(format!(
+                "Registration failed with status {status}"
+            )))
         }
     }
 }
@@ -165,7 +168,7 @@ fn generate_random_suffix() -> String {
 pub async fn register_dynamic_client(
     registration_endpoint: &str,
     redirect_uri: &str,
-) -> Result<String, String> {
+) -> Result<String> {
     let mut client = DynamicClient::new();
     client
         .register_client(registration_endpoint, redirect_uri)

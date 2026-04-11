@@ -2,6 +2,7 @@ mod aws;
 mod client_credentials;
 mod config;
 mod constants;
+mod error;
 mod http;
 mod oidc;
 mod pkce;
@@ -36,8 +37,17 @@ async fn main() {
     debug!("OpenID URL: {}", config.openid_url);
     debug!("Region: {}", config.region);
 
-    // Fetch OIDC discovery configuration (exits on failure)
-    let oidc_config = oidc::get_oidc_config(&config.openid_url).await;
+    // Fetch OIDC discovery configuration. On failure, print the error chain
+    // and exit: this is the only place in the crate that calls `exit(1)` for
+    // runtime failures, so every module below returns `Result<_, Error>` and
+    // lets `main` decide how to surface it.
+    let oidc_config = match oidc::get_oidc_config(&config.openid_url).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     if config.client_credentials {
         // Client credentials flow — no browser interaction needed

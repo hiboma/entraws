@@ -4,8 +4,10 @@ use aws_types::app_name::AppName;
 use jsonwebtoken::dangerous::insecure_decode;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info};
+
+use crate::error::{Error, Result};
 
 /// Temporary AWS credentials obtained from STS AssumeRoleWithWebIdentity.
 pub struct StsCredentials {
@@ -30,13 +32,13 @@ pub async fn assume_role_with_token(
     duration_seconds: i32,
     log_secrets: bool,
     expected_issuer: &str,
-) -> Result<StsCredentials, String> {
+) -> Result<StsCredentials> {
     // Decode the JWT without any signature or claim validation. STS performs
     // the authoritative verification server-side; we only need the claims to
     // extract `email`/`sub` for RoleSessionName and `iss` for our defensive
-    // issuer check.
-    let token_data = insecure_decode::<HashMap<String, serde_json::Value>>(token)
-        .map_err(|e| format!("Failed to decode JWT: {}", e))?;
+    // issuer check. `?` converts `jsonwebtoken::errors::Error` into
+    // `Error::JwtDecode` via the `#[from]` impl.
+    let token_data = insecure_decode::<HashMap<String, serde_json::Value>>(token)?;
 
     let claims = token_data.claims;
 
@@ -62,14 +64,14 @@ pub async fn assume_role_with_token(
         Some(iss) if iss == expected_issuer => {
             // Matches: continue.
         }
-        Some(_) => {
-            return Err(format!(
-                "ID token issuer mismatch: expected {}, got {:?}",
-                expected_issuer, actual_iss
-            ));
+        Some(iss) => {
+            return Err(Error::IssuerMismatch {
+                expected: expected_issuer.to_string(),
+                actual: iss.to_string(),
+            });
         }
         None => {
-            return Err("ID token has no 'iss' claim".to_string());
+            return Err(Error::MissingIssuer);
         }
     }
 
@@ -78,7 +80,7 @@ pub async fn assume_role_with_token(
         .get("email")
         .and_then(|v| v.as_str())
         .or_else(|| claims.get("sub").and_then(|v| v.as_str()))
-        .ok_or_else(|| "JWT contains neither 'email' nor 'sub' claim".to_string())?
+        .ok_or(Error::NoRoleSessionName)?
         .to_string();
 
     // Build the AWS SDK config with region and user-agent.
@@ -109,12 +111,10 @@ pub async fn assume_role_with_token(
                 msg.push_str(&format!("{}", s));
                 source = s.source();
             }
-            format!("Failed to assume role with web identity: {}", msg)
+            Error::Sts(msg)
         })?;
 
-    let credentials = response
-        .credentials()
-        .ok_or_else(|| "No credentials in STS response".to_string())?;
+    let credentials = response.credentials().ok_or(Error::NoStsCredentials)?;
 
     Ok(StsCredentials {
         access_key_id: credentials.access_key_id().to_string(),
@@ -131,18 +131,22 @@ pub fn write_credentials(
     credentials: &StsCredentials,
     config_file: &str,
     profile: &str,
-) -> Result<(), String> {
+) -> Result<()> {
     let path = Path::new(config_file);
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
+        fs::create_dir_all(parent).map_err(|source| Error::WriteCredentials {
+            path: PathBuf::from(parent),
+            source,
+        })?;
     }
 
     // Load existing INI if present, otherwise start with an empty one.
     let mut ini = if path.exists() {
-        ini::Ini::load_from_file(path)
-            .map_err(|e| format!("Failed to parse {}: {}", config_file, e))?
+        ini::Ini::load_from_file(path).map_err(|source| Error::ParseCredentialsIni {
+            path: PathBuf::from(path),
+            source,
+        })?
     } else {
         ini::Ini::new()
     };
@@ -155,7 +159,7 @@ pub fn write_credentials(
     // Serialize to a string so we can control file permissions on Unix.
     let mut content: Vec<u8> = Vec::new();
     ini.write_to(&mut content)
-        .map_err(|e| format!("Failed to serialize credentials file: {}", e))?;
+        .map_err(Error::SerializeCredentials)?;
 
     // Refuse to follow symbolic links when writing credentials. This is a
     // lightweight TOCTOU-style hardening: an attacker (or a misplaced symlink)
@@ -164,11 +168,7 @@ pub fn write_credentials(
     // so the operator can inspect and correct the path explicitly.
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "Refusing to write credentials through a symbolic link: {}. \
-                 Remove the symlink or specify a different --aws-config-file.",
-                config_file
-            ));
+            return Err(Error::SymlinkRejected(PathBuf::from(path)));
         }
     }
 
@@ -182,14 +182,22 @@ pub fn write_credentials(
             .truncate(true)
             .mode(0o600)
             .open(path)
-            .map_err(|e| format!("Failed to open {}: {}", config_file, e))?;
+            .map_err(|source| Error::WriteCredentials {
+                path: PathBuf::from(path),
+                source,
+            })?;
         file.write_all(&content)
-            .map_err(|e| format!("Failed to write credentials to {}: {}", config_file, e))?;
+            .map_err(|source| Error::WriteCredentials {
+                path: PathBuf::from(path),
+                source,
+            })?;
     }
     #[cfg(not(unix))]
     {
-        fs::write(path, &content)
-            .map_err(|e| format!("Failed to write credentials to {}: {}", config_file, e))?;
+        fs::write(path, &content).map_err(|source| Error::WriteCredentials {
+            path: PathBuf::from(path),
+            source,
+        })?;
     }
 
     info!("Credentials written");

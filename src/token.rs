@@ -1,9 +1,9 @@
-use std::fmt;
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::constants::HTTP_TIMEOUT_SECS;
+use crate::error::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,23 +20,6 @@ pub struct TokenResponse {
     pub access_token: Option<String>,
 }
 
-/// Errors that can occur during the authorization code exchange.
-#[derive(Debug)]
-pub enum TokenError {
-    /// The HTTP request to the token endpoint failed or returned a non-200 status.
-    RequestFailed(String),
-}
-
-impl fmt::Display for TokenError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TokenError::RequestFailed(msg) => write!(f, "Token request failed: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for TokenError {}
-
 // ---------------------------------------------------------------------------
 // Token Exchange
 // ---------------------------------------------------------------------------
@@ -48,7 +31,7 @@ impl std::error::Error for TokenError {}
 /// - POST to token_endpoint with `application/x-www-form-urlencoded` body
 /// - Includes grant_type, code, redirect_uri, client_id, code_verifier
 /// - 5 second timeout and User-Agent header
-/// - On non-200 status, returns `TokenError::RequestFailed` with the response body
+/// - On non-200 status, returns [`Error::TokenRequest`] with the response body
 /// - Extracts `id_token` and `access_token` from the JSON response
 pub async fn exchange_authorization_code(
     token_endpoint: &str,
@@ -56,7 +39,7 @@ pub async fn exchange_authorization_code(
     redirect_uri: &str,
     client_id: &str,
     code_verifier: &str,
-) -> Result<TokenResponse, TokenError> {
+) -> Result<TokenResponse> {
     let client = crate::http::shared_client();
 
     let params = [
@@ -74,14 +57,14 @@ pub async fn exchange_authorization_code(
         .form(&params)
         .send()
         .await
-        .map_err(|e| TokenError::RequestFailed(format!("{e}")))?;
+        .map_err(|e| Error::TokenRequest(format!("{e}")))?;
 
     if response.status().as_u16() != 200 {
         let body = response
             .text()
             .await
             .unwrap_or_else(|_| "<failed to read response body>".to_string());
-        return Err(TokenError::RequestFailed(format!(
+        return Err(Error::TokenRequest(format!(
             "Acquiring tokens from OpenID Provider Failed: {body}"
         )));
     }
@@ -89,7 +72,7 @@ pub async fn exchange_authorization_code(
     let token_response: TokenResponse = response
         .json()
         .await
-        .map_err(|e| TokenError::RequestFailed(format!("Failed to parse token response: {e}")))?;
+        .map_err(|e| Error::TokenRequest(format!("Failed to parse token response: {e}")))?;
 
     Ok(token_response)
 }
@@ -97,12 +80,6 @@ pub async fn exchange_authorization_code(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_token_error_display_request_failed() {
-        let err = TokenError::RequestFailed("connection refused".to_string());
-        assert_eq!(err.to_string(), "Token request failed: connection refused");
-    }
 
     #[test]
     fn test_token_response_deserialization_full() {
@@ -126,5 +103,14 @@ mod tests {
         let resp: TokenResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.id_token.as_deref(), Some("abc"));
         assert!(resp.access_token.is_none());
+    }
+
+    #[test]
+    fn test_token_request_error_display() {
+        let err = Error::TokenRequest("connection refused".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Token endpoint request failed: connection refused"
+        );
     }
 }

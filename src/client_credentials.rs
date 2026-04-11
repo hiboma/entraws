@@ -4,6 +4,7 @@ use std::time::Duration;
 use tracing::debug;
 
 use crate::constants::CLIENT_CREDENTIALS_TIMEOUT_SECS;
+use crate::error::{Error, Result};
 
 const DEFAULT_SCOPES: &str = "openid email";
 
@@ -12,7 +13,7 @@ const DEFAULT_SCOPES: &str = "openid email";
 pub async fn handle_client_credentials_flow(
     config: &crate::config::Config,
     oidc_config: &crate::oidc::OidcConfig,
-) -> Result<(), String> {
+) -> Result<()> {
     debug!("Starting client credentials flow");
 
     let token_endpoint = &oidc_config.token_endpoint;
@@ -115,15 +116,16 @@ async fn try_client_secret_basic(
 }
 
 /// Attempt `client_secret_post` authentication (credentials in POST body).
-/// Returns `Ok(response_body)` on HTTP 200, or `Err(message)` on failure so the
-/// caller can surface the error to `main` instead of exiting directly.
+/// Returns `Ok(response_body)` on HTTP 200, or an [`Error::TokenRequest`] on
+/// failure so the caller can surface the error to `main` instead of exiting
+/// directly.
 async fn try_client_secret_post(
     client: &reqwest::Client,
     token_endpoint: &str,
     base_form: &HashMap<&str, &str>,
     client_id: &str,
     client_secret: &str,
-) -> Result<String, String> {
+) -> Result<String> {
     debug!("Attempting client_secret_post authentication");
 
     let mut form = base_form.clone();
@@ -137,19 +139,19 @@ async fn try_client_secret_post(
         .form(&form)
         .send()
         .await
-        .map_err(|e| format!("Failed to request token from provider: {e}"))?;
+        .map_err(|e| Error::TokenRequest(format!("Failed to request token from provider: {e}")))?;
 
     if resp.status().as_u16() != 200 {
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
+        return Err(Error::TokenRequest(format!(
             "Token request failed with both client_secret_basic and client_secret_post: {body}"
-        ));
+        )));
     }
 
     debug!("client_secret_post succeeded");
     resp.text()
         .await
-        .map_err(|e| format!("Failed to request token from provider: {e}"))
+        .map_err(|e| Error::TokenRequest(format!("Failed to request token from provider: {e}")))
 }
 
 /// Process a successful client credentials token response.
@@ -159,16 +161,16 @@ async fn process_client_credentials_response(
     config: &crate::config::Config,
     oidc_config: &crate::oidc::OidcConfig,
     response_body: &str,
-) -> Result<(), String> {
+) -> Result<()> {
     let tokens: serde_json::Value = serde_json::from_str(response_body)
-        .map_err(|e| format!("Failed to parse token response JSON: {}", e))?;
+        .map_err(|e| Error::TokenRequest(format!("Failed to parse token response JSON: {e}")))?;
 
     // Prefer id_token, fall back to access_token (matching Python behavior)
     let token = tokens
         .get("id_token")
         .or_else(|| tokens.get("access_token"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "No id_token or access_token in token response".to_string())?;
+        .ok_or(Error::MissingIdToken)?;
 
     debug!("Token received from client credentials grant");
 
