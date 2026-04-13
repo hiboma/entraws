@@ -12,8 +12,6 @@
             --fg: #1c1c1c;
             --muted: #6b6b6b;
             --rule: #e3e3de;
-            --accent-success: #0f7b4a;
-            --accent-error: #9b1c1c;
             --accent-processing: #1c1c1c;
         }
         * { box-sizing: border-box; }
@@ -41,47 +39,6 @@
             border: 1px solid var(--rule);
             padding: 48px 56px;
         }
-        .eyebrow {
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 13px;
-            font-weight: 500;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-            color: var(--muted);
-            margin: 0 0 24px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .eyebrow-mark {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 18px;
-            height: 18px;
-            border-radius: 50%;
-            background: currentColor;
-            color: #ffffff;
-            font-size: 11px;
-            font-weight: 600;
-            line-height: 1;
-        }
-        .eyebrow-mark svg {
-            width: 10px;
-            height: 10px;
-        }
-        .card.success .eyebrow { color: var(--accent-success); }
-        .card.error .eyebrow { color: var(--accent-error); }
-        .card.processing .eyebrow { color: var(--accent-processing); }
-        .card.processing .eyebrow-mark {
-            background: transparent;
-            border: 2px solid currentColor;
-            border-top-color: transparent;
-            animation: spin 0.9s linear infinite;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
         h1 {
             font-family: 'IBM Plex Sans', sans-serif;
             font-weight: 600;
@@ -89,14 +46,44 @@
             line-height: 1.35;
             margin: 0 0 20px;
             letter-spacing: -0.01em;
+            display: flex;
+            align-items: center;
+            gap: 12px;
         }
-        h1 code {
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 15px;
-            font-weight: 500;
-            background: #f2f2ee;
-            padding: 2px 6px;
-            word-break: break-all;
+        h1 .status-icon {
+            font-size: 24px;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            min-width: 20px;
+            border: 2.5px solid #d0d0d0;
+            border-top-color: var(--accent-processing);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .dots::after {
+            content: '';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+        @keyframes dots {
+            0%  { content: ''; }
+            25% { content: '.'; }
+            50% { content: '..'; }
+            75% { content: '...'; }
+        }
+        .subtitle {
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-weight: 400;
+            font-size: 16px;
+            color: var(--muted);
+            margin: 0 0 20px;
         }
         p {
             margin: 0 0 14px;
@@ -143,9 +130,8 @@
 </head>
 <body>
     <div id="root">
-        <div class="card processing">
-            <p class="eyebrow"><span class="eyebrow-mark"></span>Processing</p>
-            <h1>Completing authentication</h1>
+        <div class="card">
+            <h1><span class="spinner"></span>Authenticating<span class="dots"></span></h1>
             <p class="muted">Exchanging the authorization response with your identity provider.</p>
         </div>
     </div>
@@ -174,9 +160,9 @@
 
             function showError(message) {
                 render(`
-                    <div class="card error">
-                        <p class="eyebrow"><span class="eyebrow-mark">!</span>Failed</p>
-                        <h1>Authentication failed</h1>
+                    <div class="card">
+                        <h1><span class="status-icon">&#x274C;</span>Failed</h1>
+                        <p class="subtitle">Authentication failed</p>
                         <p>${escapeHtml(message)}</p>
                         <hr>
                         <p class="muted">Additional debug information from your identity provider may be present in the address bar.</p>
@@ -186,9 +172,9 @@
 
             function showSuccess() {
                 render(`
-                    <div class="card success">
-                        <p class="eyebrow"><span class="eyebrow-mark">✓</span>Authenticated</p>
-                        <h1>Role assumed successfully</h1>
+                    <div class="card">
+                        <h1><span class="status-icon">&#x2705;</span>Authenticated</h1>
+                        <p class="subtitle">Role assumed successfully</p>
                         <p>Your AWS credentials have been written to the profile below.</p>
                         <dl>
                             <dt>Role</dt>
