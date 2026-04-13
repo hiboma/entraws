@@ -24,7 +24,13 @@ async fn main() {
     }
 
     // Initialize tracing
-    let filter = if config.debug { "debug" } else { "info" };
+    let filter = if config.debug {
+        "debug"
+    } else if config.quiet {
+        "warn"
+    } else {
+        "info"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

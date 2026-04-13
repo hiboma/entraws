@@ -43,6 +43,10 @@ pub struct CliArgs {
     #[arg(long = "debug")]
     pub debug: bool,
 
+    /// Suppress informational messages (set log level to warn)
+    #[arg(short = 'q', long = "quiet")]
+    pub quiet: bool,
+
     /// Log secret-bearing values (JWT claims such as iss/aud/sub/ver).
     /// Dangerous: use only when diagnosing authentication issues in a private
     /// environment, and never in shared logs. Implies --debug.
@@ -74,6 +78,7 @@ pub struct Config {
     pub profile_to_update: String,
     pub aws_config_file: PathBuf,
     pub debug: bool,
+    pub quiet: bool,
     pub dangerously_log_secrets: bool,
     pub implicit: bool,
     pub client_credentials: bool,
@@ -168,6 +173,8 @@ impl Config {
         let dangerously_log_secrets = args.dangerously_log_secrets;
         // --dangerously-log-secrets implies --debug so tracing is at DEBUG level.
         let debug = args.debug || dangerously_log_secrets;
+        // --quiet is overridden by --debug / --dangerously-log-secrets.
+        let quiet = args.quiet && !debug;
         let implicit = args.implicit;
         let client_credentials = args.client_credentials;
         let scopes = args.scopes;
@@ -200,6 +207,7 @@ impl Config {
             profile_to_update,
             aws_config_file,
             debug,
+            quiet,
             dangerously_log_secrets,
             implicit,
             client_credentials,
@@ -274,6 +282,7 @@ mod tests {
         assert!(args.profile_to_update.is_none());
         assert!(args.aws_config_file.is_none());
         assert!(!args.debug);
+        assert!(!args.quiet);
         assert!(!args.dangerously_log_secrets);
         assert!(!args.implicit);
         assert!(!args.client_credentials);
@@ -299,6 +308,18 @@ mod tests {
         let args =
             CliArgs::try_parse_from(["entraws", "-p", "my-profile"]).expect("parse should succeed");
         assert_eq!(args.profile_to_update.as_deref(), Some("my-profile"));
+    }
+
+    #[test]
+    fn cli_accepts_quiet_flag() {
+        let args = CliArgs::try_parse_from(["entraws", "--quiet"]).expect("parse should succeed");
+        assert!(args.quiet);
+    }
+
+    #[test]
+    fn cli_accepts_short_quiet_flag() {
+        let args = CliArgs::try_parse_from(["entraws", "-q"]).expect("parse should succeed");
+        assert!(args.quiet);
     }
 
     #[test]
