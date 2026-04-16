@@ -2,11 +2,14 @@ mod aws;
 mod client_credentials;
 mod config;
 mod constants;
+mod credential;
+mod credentials_cmd;
 mod error;
 mod http;
 mod oidc;
 mod pkce;
 mod server;
+mod status_cmd;
 mod token;
 
 use std::sync::Arc;
@@ -16,8 +19,35 @@ use tracing::{debug, info};
 
 #[tokio::main]
 async fn main() {
-    let config = config::Config::parse_and_resolve();
+    // Parse once and branch on whether a subcommand was supplied. The
+    // `credentials` subcommand is invoked by the AWS CLI as a
+    // `credential_process` helper and therefore must never start a browser
+    // flow: we dispatch it here before any tracing output goes to stderr,
+    // because AWS CLI captures stderr from credential_process subprocesses.
+    match config::parse_invocation() {
+        config::Invocation::Credentials(args) => {
+            credentials_cmd::run(args);
+        }
+        config::Invocation::Status(args) => {
+            status_cmd::run(args);
+        }
+        config::Invocation::CacheKey(args) => {
+            // Thin wrapper over `credential::cache_key`. Prints the hex
+            // key on stdout (one line, no trailing prose) so it can be
+            // piped into shell substitutions such as
+            // `credential_process = entraws credentials --cache-key
+            // "$(entraws cache-key --role ... --openid-url ... --client-id ...)"`.
+            let key = credential::cache_key(&args.role, &args.openid_url, &args.client_id);
+            println!("{key}");
+            std::process::exit(0);
+        }
+        config::Invocation::Login(config) => {
+            run_login(config).await;
+        }
+    }
+}
 
+async fn run_login(config: config::Config) {
     // Set STS regional endpoints before any AWS SDK calls
     unsafe {
         std::env::set_var("AWS_STS_REGIONAL_ENDPOINTS", "regional");

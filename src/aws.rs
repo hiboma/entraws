@@ -1,20 +1,12 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_sts::config::Region;
 use aws_types::app_name::AppName;
+use chrono::{DateTime, TimeZone, Utc};
 use jsonwebtoken::dangerous::insecure_decode;
 use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use tracing::{debug, info};
 
+use crate::credential::{Secret, StsCredentials};
 use crate::error::{Error, Result};
-
-/// Temporary AWS credentials obtained from STS AssumeRoleWithWebIdentity.
-pub struct StsCredentials {
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub session_token: String,
-}
 
 /// Call STS AssumeRoleWithWebIdentity using the given OIDC token and return
 /// temporary credentials.
@@ -116,92 +108,170 @@ pub async fn assume_role_with_token(
 
     let credentials = response.credentials().ok_or(Error::NoStsCredentials)?;
 
+    // STS returns expiration as a `DateTime` in its own type. Convert it to
+    // a chrono `DateTime<Utc>` so the rest of the crate can reason about
+    // expiry uniformly. The conversion is via epoch seconds because
+    // `aws_sdk_sts::primitives::DateTime` does not directly implement
+    // `Into<chrono::DateTime>`.
+    let expiration = sts_datetime_to_chrono(credentials.expiration())?;
+
     Ok(StsCredentials {
         access_key_id: credentials.access_key_id().to_string(),
-        secret_access_key: credentials.secret_access_key().to_string(),
-        session_token: credentials.session_token().to_string(),
+        secret_access_key: Secret::new(credentials.secret_access_key().to_string()),
+        session_token: Secret::new(credentials.session_token().to_string()),
+        expiration,
     })
 }
 
-/// Write temporary AWS credentials to the specified config file under the
-/// given profile name. Reads any existing INI file, updates only the target
-/// profile's three credential keys, and writes the file back so other
-/// profiles are preserved.
-pub fn write_credentials(
-    credentials: &StsCredentials,
-    config_file: &str,
-    profile: &str,
-) -> Result<()> {
-    let path = Path::new(config_file);
+/// Convert AWS SDK's `DateTime` into a `chrono::DateTime<Utc>`.
+fn sts_datetime_to_chrono(dt: &aws_sdk_sts::primitives::DateTime) -> Result<DateTime<Utc>> {
+    let secs = dt.secs();
+    let nanos = dt.subsec_nanos();
+    match Utc.timestamp_opt(secs, nanos) {
+        chrono::LocalResult::Single(t) => Ok(t),
+        _ => Err(Error::Sts(format!(
+            "STS returned an out-of-range expiration: secs={secs}, nanos={nanos}"
+        ))),
+    }
+}
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| Error::WriteCredentials {
-            path: PathBuf::from(parent),
-            source,
-        })?;
+/// Persist STS credentials through the sink selected in [`crate::config::Config`].
+///
+/// Writes happen twice for every successful login:
+///
+/// 1. The user-facing sink (Keychain or `~/.aws/credentials`). This is
+///    the store the operator can inspect and manage.
+/// 2. The per-process [`CacheStore`] at `~/.entraws/cache/`. This is the
+///    hot-path read cache used by `entraws credentials` under
+///    `credential_process`.
+///
+/// Before storing, the expiration is moved earlier by [`PRE_EXPIRE_MARGIN`]
+/// so the AWS SDK starts refreshing before the true STS expiry. Without
+/// the margin, a long-running signed request can see its credentials
+/// expire mid-retry (aws-sdk-java-v2 #3408).
+pub fn persist_credentials(
+    config: &crate::config::Config,
+    credentials: &StsCredentials,
+) -> Result<()> {
+    use crate::config::Backend;
+    use crate::credential::cache::CacheStore;
+    use crate::credential::file::FileSink;
+    use crate::credential::sink::CredentialSink;
+    use crate::credential::{cache_key, CacheEntry, PRE_EXPIRE_MARGIN};
+
+    // Shorten the expiration so SDK pre-refresh fires on a clean margin.
+    // We clone the credentials to avoid mutating the caller's copy.
+    let client_id_for_key = config.client_id.as_deref().unwrap_or("");
+    let key = cache_key(&config.role, &config.openid_url, client_id_for_key);
+
+    let mut adjusted = StsCredentials {
+        access_key_id: credentials.access_key_id.clone(),
+        secret_access_key: credentials.secret_access_key.clone(),
+        session_token: credentials.session_token.clone(),
+        expiration: credentials.expiration - PRE_EXPIRE_MARGIN,
+    };
+    // If STS returned an unusually short window (<= margin), clamp to
+    // the raw expiration so we never advertise a past timestamp.
+    if adjusted.expiration <= Utc::now() {
+        adjusted.expiration = credentials.expiration;
     }
 
-    // Load existing INI if present, otherwise start with an empty one.
-    let mut ini = if path.exists() {
-        ini::Ini::load_from_file(path).map_err(|source| Error::ParseCredentialsIni {
-            path: PathBuf::from(path),
-            source,
-        })?
-    } else {
-        ini::Ini::new()
+    let entry = CacheEntry::new(adjusted, config.role.clone(), key.clone());
+
+    let sink: Box<dyn CredentialSink> = match config.sink {
+        Backend::File => Box::new(FileSink::new(
+            config.aws_config_file.clone(),
+            config.profile_to_update.clone(),
+        )),
+        #[cfg(target_os = "macos")]
+        Backend::Keychain => Box::new(crate::credential::keychain::KeychainSink::new()),
     };
 
-    ini.with_section(Some(profile))
-        .set("aws_access_key_id", &credentials.access_key_id)
-        .set("aws_secret_access_key", &credentials.secret_access_key)
-        .set("aws_session_token", &credentials.session_token);
+    sink.store(&entry)?;
 
-    // Serialize to a string so we can control file permissions on Unix.
-    let mut content: Vec<u8> = Vec::new();
-    ini.write_to(&mut content)
-        .map_err(Error::SerializeCredentials)?;
+    // Write to the per-process cache. Failures here are non-fatal for
+    // login: the user can still re-run `entraws credentials` which will
+    // populate the cache from the primary sink.
+    let cache = CacheStore::new(CacheStore::default_root());
+    if let Err(e) = cache.store(&key, &entry) {
+        tracing::warn!("failed to update credential cache: {e}");
+    }
 
-    // Refuse to follow symbolic links when writing credentials. This is a
-    // lightweight TOCTOU-style hardening: an attacker (or a misplaced symlink)
-    // could otherwise cause credentials to be written through a link to an
-    // unexpected destination. We reject the write rather than try to "fix" it
-    // so the operator can inspect and correct the path explicitly.
-    if let Ok(metadata) = std::fs::symlink_metadata(path) {
-        if metadata.file_type().is_symlink() {
-            return Err(Error::SymlinkRejected(PathBuf::from(path)));
+    // Report the outcome on stderr. Intentionally does **not** include
+    // the cache-key: the key is a deterministic function of
+    // role/openid-url/client-id and is also visible as a filename under
+    // `~/.entraws/cache/`, so echoing it on every login would only pad
+    // logs. Operators who need the key can regenerate it with
+    // `entraws cache-key ...`.
+    if !config.quiet {
+        eprintln!(
+            "stored credentials to {} (profile={})",
+            sink.name(),
+            config.profile_to_update
+        );
+    }
+
+    // Optional: write the matching credential_process stanza to
+    // ~/.aws/config so the operator does not have to hand-edit it.
+    // Failures here do not roll back the sink write — the credentials
+    // are still usable via `entraws credentials --cache-key ...` even
+    // if ~/.aws/config could not be updated.
+    if config.configure_profile {
+        maybe_configure_aws_config(config, &key, sink.name())?;
+    }
+
+    Ok(())
+}
+
+/// Thin wrapper around [`crate::credential::aws_config::configure_profile`]
+/// that builds the request payload from a resolved [`Config`] and
+/// reports the outcome on stderr so the operator can tell at a glance
+/// whether anything changed.
+fn maybe_configure_aws_config(
+    config: &crate::config::Config,
+    cache_key: &str,
+    sink_name: &str,
+) -> Result<()> {
+    use crate::credential::aws_config::{configure_profile, ConfigureOutcome, ConfigureRequest};
+
+    let bin = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "entraws".to_string());
+
+    let req = ConfigureRequest {
+        path: &config.aws_config_config_file,
+        profile: &config.profile_to_update,
+        cache_key,
+        source: sink_name,
+        region: &config.region,
+        binary_path: &bin,
+        force: config.force,
+        dry_run: config.dry_run,
+    };
+
+    let outcome = configure_profile(&req)?;
+
+    if !config.quiet {
+        match outcome {
+            ConfigureOutcome::Added => eprintln!(
+                "wrote [profile {}] to {}",
+                config.profile_to_update,
+                config.aws_config_config_file.display()
+            ),
+            ConfigureOutcome::Updated => eprintln!(
+                "updated [profile {}] in {}",
+                config.profile_to_update,
+                config.aws_config_config_file.display()
+            ),
+            ConfigureOutcome::NoOp => {
+                eprintln!("[profile {}] already up-to-date", config.profile_to_update)
+            }
+            ConfigureOutcome::DryRun => eprintln!(
+                "--dry-run: {} would be updated (see diff above)",
+                config.aws_config_config_file.display()
+            ),
         }
     }
-
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|source| Error::WriteCredentials {
-                path: PathBuf::from(path),
-                source,
-            })?;
-        file.write_all(&content)
-            .map_err(|source| Error::WriteCredentials {
-                path: PathBuf::from(path),
-                source,
-            })?;
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, &content).map_err(|source| Error::WriteCredentials {
-            path: PathBuf::from(path),
-            source,
-        })?;
-    }
-
-    info!("Credentials written");
-    debug!("Credentials written to profile {profile} in {config_file}");
 
     Ok(())
 }
@@ -217,11 +287,11 @@ pub fn print_credentials_as_exports(credentials: &StsCredentials) {
     );
     println!(
         "export AWS_SECRET_ACCESS_KEY='{}'",
-        shell_single_quote(&credentials.secret_access_key)
+        shell_single_quote(credentials.secret_access_key.expose())
     );
     println!(
         "export AWS_SESSION_TOKEN='{}'",
-        shell_single_quote(&credentials.session_token)
+        shell_single_quote(credentials.session_token.expose())
     );
 }
 
@@ -234,109 +304,7 @@ fn shell_single_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! Unit tests for [`write_credentials`]. All file operations use
-    //! [`tempfile::TempDir`] to keep the host's `~/.aws/credentials`
-    //! untouched even if the test binary is run with a real HOME.
     use super::*;
-    use tempfile::TempDir;
-
-    fn make_credentials() -> StsCredentials {
-        StsCredentials {
-            access_key_id: "AKIA_TEST".to_string(),
-            secret_access_key: "secret".to_string(),
-            session_token: "token".to_string(),
-        }
-    }
-
-    #[test]
-    fn write_credentials_creates_new_file() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("credentials");
-        let path_str = path.to_str().unwrap();
-
-        write_credentials(&make_credentials(), path_str, "entraws").expect("should write");
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("[entraws]"));
-        assert!(
-            content.contains("aws_access_key_id=AKIA_TEST")
-                || content.contains("aws_access_key_id = AKIA_TEST")
-        );
-        assert!(content.contains("secret"));
-        assert!(content.contains("token"));
-    }
-
-    #[test]
-    fn write_credentials_preserves_other_profiles() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("credentials");
-        std::fs::write(
-            &path,
-            "[other]\naws_access_key_id=EXISTING\naws_secret_access_key=other-secret\n",
-        )
-        .unwrap();
-
-        write_credentials(&make_credentials(), path.to_str().unwrap(), "entraws")
-            .expect("should write");
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("[other]"));
-        assert!(content.contains("EXISTING"));
-        assert!(content.contains("other-secret"));
-        assert!(content.contains("[entraws]"));
-        assert!(content.contains("AKIA_TEST"));
-    }
-
-    #[test]
-    fn write_credentials_overwrites_existing_profile() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("credentials");
-        std::fs::write(
-            &path,
-            "[entraws]\naws_access_key_id=OLD_KEY\naws_secret_access_key=old-secret\naws_session_token=old-token\n",
-        )
-        .unwrap();
-
-        write_credentials(&make_credentials(), path.to_str().unwrap(), "entraws")
-            .expect("should write");
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("[entraws]"));
-        assert!(content.contains("AKIA_TEST"));
-        assert!(
-            !content.contains("OLD_KEY"),
-            "old access key should have been replaced, got:\n{content}"
-        );
-        assert!(
-            !content.contains("old-secret"),
-            "old secret should have been replaced, got:\n{content}"
-        );
-    }
-
-    #[test]
-    fn write_credentials_creates_parent_directory() {
-        let dir = TempDir::new().unwrap();
-        let nested = dir.path().join("nested").join("dir").join("credentials");
-
-        write_credentials(&make_credentials(), nested.to_str().unwrap(), "entraws")
-            .expect("should create parent directories");
-
-        assert!(nested.exists(), "credentials file should exist after write");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn write_credentials_sets_0600_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("credentials");
-
-        write_credentials(&make_credentials(), path.to_str().unwrap(), "entraws").unwrap();
-
-        let meta = std::fs::metadata(&path).unwrap();
-        let mode = meta.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "expected 0o600, got {mode:o}");
-    }
 
     #[test]
     fn shell_single_quote_preserves_ordinary_strings() {
@@ -365,28 +333,5 @@ mod tests {
         // Shell metacharacters are inert inside single quotes, so they
         // must pass through unchanged.
         assert_eq!(shell_single_quote("$`\\!*?"), "$`\\!*?");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn write_credentials_rejects_symlinks() {
-        use std::os::unix::fs::symlink;
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target");
-        // The target must be parseable as an INI file because
-        // write_credentials loads it before the symlink check. Use an
-        // empty file so the INI parser accepts it.
-        std::fs::write(&target, "").unwrap();
-        let link = dir.path().join("link");
-        symlink(&target, &link).unwrap();
-
-        let err = write_credentials(&make_credentials(), link.to_str().unwrap(), "entraws")
-            .expect_err("should reject symlink");
-        match err {
-            Error::SymlinkRejected(p) => {
-                assert_eq!(p, link);
-            }
-            other => panic!("expected SymlinkRejected, got {other:?}"),
-        }
     }
 }

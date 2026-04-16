@@ -111,6 +111,38 @@ pub enum Error {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Failed to access credential cache at {}: {source}", path.display())]
+    CacheIo {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Credential cache at {} is corrupt: {source}", path.display())]
+    CacheCorrupt {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    // Reserved for future typed-error dispatch in the `credentials`
+    // subcommand; the current implementation surfaces these conditions
+    // via exit code + stderr hint instead of returning an `Error`.
+    #[allow(dead_code)]
+    #[error("No cached credentials found for cache-key {cache_key}. Run `entraws login` first.")]
+    CacheMiss { cache_key: String },
+
+    #[allow(dead_code)]
+    #[error("Cached credentials expired for cache-key {cache_key}. Run `entraws login` again.")]
+    CacheExpired { cache_key: String },
+
+    #[error(
+        "AWS config at {} already has a [profile {profile}] section that was not created by entraws. \
+         Pass --force to overwrite, or remove the section manually.",
+        path.display()
+    )]
+    ProfileExists { profile: String, path: PathBuf },
 }
 
 /// Convenience alias used throughout the crate.
