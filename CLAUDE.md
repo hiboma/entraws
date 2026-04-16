@@ -36,13 +36,22 @@ The crate is a single binary (`src/main.rs`) composed of narrow modules that eac
 2. **Implicit flow** (`--implicit`): same server, but the callback HTML posts the `id_token` directly (no code exchange).
 3. **Client credentials grant** (`--client-credentials`): no browser and no local server. Tries `client_secret_basic` first and falls back to `client_secret_post` automatically.
 
-All three flows converge on `aws::assume_role_with_token`. By default the
-result is persisted via `aws::write_credentials`; when `--export` is set,
-`aws::print_credentials_as_exports` emits POSIX `export` statements to
-stdout instead and the credentials file is never touched. The `--export`
-branch implies `--quiet` so informational tracing output does not
-contaminate stdout (tracing writes to stderr, so `--export --debug` still
-produces a clean `eval`-able stream).
+All three flows converge on `aws::assume_role_with_token`. By default the result is persisted via `aws::persist_credentials`, which writes through the [`CredentialSink`](src/credential/sink.rs) selected via `--sink` (Keychain on macOS by default, `~/.aws/credentials` otherwise) and also stores the `CacheEntry` in `~/.entraws/cache/` via [`CacheStore`](src/credential/cache.rs). When `--export` is set, `aws::print_credentials_as_exports` emits POSIX `export` statements to stdout instead and neither sink nor cache is touched. `--export` implies `--quiet` so informational tracing output does not contaminate stdout (tracing writes to stderr, so `--export --debug` still produces a clean `eval`-able stream).
+
+### Subcommands
+
+The binary has three behaviour modes:
+
+- **`entraws login`** (default — also the behaviour when invoked without a subcommand) runs the OIDC + STS flow above and persists the result.
+- **`entraws credentials --cache-key <hex> --source <file|keychain>`** is the AWS `credential_process` helper. It reads the cache / source and emits `{"Version": 1, ...}` on stdout. It never opens a browser and does not initialise tracing, so stderr is kept free of secrets even under AWS CLI log capture.
+- **`entraws status --cache-key <hex>`** prints the remaining TTL of a cached entry. Cache-only, no sink access.
+
+### Credential sinks and sources (`src/credential/`)
+
+- [`Secret<T>`](src/credential/mod.rs) wraps secret strings; `Debug` and `Display` both redact. `Secret::expose()` is the only escape hatch and is grep-friendly for audits.
+- [`CredentialSink`](src/credential/sink.rs) / [`CredentialSource`](src/credential/source.rs) are the trait boundaries. `FileSink` / `FileSource` are in `file.rs`; `KeychainSink` / `KeychainSource` in `keychain.rs` (macOS only).
+- [`CacheStore`](src/credential/cache.rs) uses `std::fs::File::lock` (stable since Rust 1.89) for flock, `tempfile::NamedTempFile::persist` for atomic rename, and 0o600 on Unix. The pre-expire margin of 5 minutes (`PRE_EXPIRE_MARGIN`) is subtracted from the raw STS expiration before storing so AWS SDK pre-refresh fires cleanly.
+- `cache_key(role, openid_url, client_id)` produces a NUL-separated SHA-256 hex so the same role can back multiple profiles without duplicate cache entries.
 
 ### Local callback server (`src/server.rs`)
 
@@ -55,7 +64,7 @@ produces a clean `eval`-able stream).
 
 ### Credential file handling (`src/aws.rs`)
 
-- `write_credentials` loads the existing `~/.aws/credentials` as an INI file, **updates only the target profile's three credential keys**, and writes the file back. Other profiles must be preserved — the tests in `aws::tests` lock this behavior in.
+- `persist_credentials` dispatches to the selected [`CredentialSink`](src/credential/sink.rs). For the `file` sink, `FileSink::store` (in `src/credential/file.rs`) loads the existing `~/.aws/credentials` as an INI file, **updates only the target profile's three credential keys**, and writes the file back. Other profiles must be preserved — the tests in `credential::file::tests` lock this behavior in.
 - On Unix, the file is opened with `mode(0o600)`.
 - A `symlink_metadata` check refuses to write through a symbolic link (returns `Error::SymlinkRejected`). This is lightweight TOCTOU-style hardening; keep it.
 - `print_credentials_as_exports` is the alternate output path selected by `--export`. It prints three POSIX `export` statements to stdout with values wrapped in single quotes; embedded single quotes are escaped via `'\''` by `shell_single_quote`. Never switch this to double-quoting — session tokens routinely contain `$` / `` ` `` / `\` which are not inert inside double quotes.

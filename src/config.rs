@@ -1,12 +1,103 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::env;
 use std::path::PathBuf;
+
+/// Subcommands. When `None`, the top-level flags run the legacy "login"
+/// flow (PKCE/implicit/client-credentials), preserving backwards
+/// compatibility with scripts that called `entraws` without a subcommand.
+/// When `Some(Command::Credentials { .. })`, the binary behaves as an AWS
+/// `credential_process` helper and never opens a browser.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Emit cached credentials as AWS credential_process JSON on stdout.
+    ///
+    /// This subcommand is invoked by the AWS CLI/SDK as
+    /// `credential_process`. It never starts an interactive browser flow
+    /// because `credential_process` subprocesses have a ~1 minute timeout
+    /// and no TTY. When the cache is empty or stale, the subcommand
+    /// prints a hint to stderr and exits non-zero so the operator can
+    /// rerun `entraws login`.
+    Credentials {
+        /// Cache key printed by `entraws login`. Stable across invocations
+        /// as long as role/openid-url/client-id are unchanged.
+        #[arg(long = "cache-key")]
+        cache_key: String,
+
+        /// Source backend to fall back to when the per-process cache is
+        /// empty. `file` reads `~/.aws/credentials`; `keychain` (macOS)
+        /// reads the login keychain. The default depends on the platform.
+        #[arg(long = "source", value_enum, default_value_t = default_source())]
+        source: Backend,
+
+        /// Minimum remaining TTL, in seconds, before credentials are
+        /// treated as stale. Defaults to 300s (five minutes) which is
+        /// both the AWS SDK refresh-ahead convention and the
+        /// `PRE_EXPIRE_MARGIN` baked into stored entries.
+        #[arg(long = "min-ttl-seconds", default_value_t = 300)]
+        min_ttl_seconds: u64,
+
+        /// Profile name inside `~/.aws/credentials` to read when
+        /// `--source file`. Ignored for other sources.
+        #[arg(short = 'p', long = "profile-to-update")]
+        profile_to_update: Option<String>,
+
+        /// Override the credentials-file path (`--source file` only).
+        #[arg(long = "aws-config-file")]
+        aws_config_file: Option<String>,
+    },
+
+    /// Show the remaining TTL and source for a cached credential set.
+    ///
+    /// This never touches the primary sink (so it will not trigger a
+    /// keychain prompt); it reads only the per-process cache under
+    /// `~/.entraws/cache/`.
+    Status {
+        /// Cache key printed by `entraws login`.
+        #[arg(long = "cache-key")]
+        cache_key: String,
+    },
+}
+
+/// Backend selector shared by `--sink` (login) and `--source` (credentials).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Backend {
+    File,
+    #[cfg(target_os = "macos")]
+    Keychain,
+}
+
+impl Backend {
+    #[allow(dead_code)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Backend::File => "file",
+            #[cfg(target_os = "macos")]
+            Backend::Keychain => "keychain",
+        }
+    }
+}
+
+fn default_source() -> Backend {
+    #[cfg(target_os = "macos")]
+    {
+        Backend::Keychain
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Backend::File
+    }
+}
 
 /// AWS STS OIDC Driver - Get temporary AWS credentials via OpenID Connect
 #[derive(Parser, Debug)]
 #[command(name = "entraws")]
 #[command(about = "Get temporary AWS credentials via OpenID Connect")]
 pub struct CliArgs {
+    /// Optional subcommand. When omitted the binary runs the legacy
+    /// login flow using the top-level flags.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// AWS Role ARN to assume (env: AWS_ROLE_ARN)
     #[arg(long = "role")]
     pub role: Option<String>,
@@ -70,6 +161,13 @@ pub struct CliArgs {
     /// `eval "$(entraws ... --export)"`. Implies --quiet unless --debug is set.
     #[arg(long = "export")]
     pub export: bool,
+
+    /// Where to persist credentials after a successful login. `file` writes
+    /// `~/.aws/credentials`; `keychain` (macOS) writes the login keychain.
+    /// Defaults to `keychain` on macOS and `file` elsewhere. Ignored when
+    /// `--export` is set.
+    #[arg(long = "sink", value_enum)]
+    pub sink: Option<Backend>,
 }
 
 /// Resolved configuration with all values finalized from CLI args and environment variables.
@@ -91,14 +189,97 @@ pub struct Config {
     pub scopes: Option<String>,
     pub is_dynamic_client: bool,
     pub export: bool,
+    pub sink: Backend,
+}
+
+/// Parse CLI arguments once and return either a resolved [`Config`] for
+/// the login flow or the [`Command::Credentials`] payload so `main` can
+/// dispatch accordingly. Keeping the parser call in one place means
+/// `--help` and argument validation behave identically regardless of
+/// which path executes.
+#[allow(dead_code)]
+pub enum Invocation {
+    Login(Config),
+    Credentials(CredentialsArgs),
+    Status(StatusArgs),
+}
+
+/// Resolved arguments for the `status` subcommand.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct StatusArgs {
+    pub cache_key: String,
+}
+
+/// Resolved arguments for the `credentials` subcommand.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct CredentialsArgs {
+    pub cache_key: String,
+    pub source: Backend,
+    pub min_ttl_seconds: u64,
+    pub profile_to_update: String,
+    pub aws_config_file: PathBuf,
+}
+
+#[allow(dead_code)]
+pub fn parse_invocation() -> Invocation {
+    let args = CliArgs::parse();
+    match args.command {
+        Some(Command::Credentials {
+            cache_key,
+            source,
+            min_ttl_seconds,
+            profile_to_update,
+            aws_config_file,
+        }) => {
+            let profile = profile_to_update
+                .or_else(|| env::var("PROFILE_TO_UPDATE").ok())
+                .unwrap_or_else(|| "entraws".to_string());
+            let file = aws_config_file
+                .or_else(|| env::var("AWS_CONFIG_FILE").ok())
+                .unwrap_or_else(|| "~/.aws/credentials".to_string());
+            let aws_config_file = expand_home(&file);
+
+            Invocation::Credentials(CredentialsArgs {
+                cache_key,
+                source,
+                min_ttl_seconds,
+                profile_to_update: profile,
+                aws_config_file,
+            })
+        }
+        Some(Command::Status { cache_key }) => Invocation::Status(StatusArgs { cache_key }),
+        None => Invocation::Login(Config::resolve_login(args)),
+    }
+}
+
+fn expand_home(path_str: &str) -> PathBuf {
+    if let Some(rest) = path_str.strip_prefix('~') {
+        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(format!("{home}{rest}"))
+    } else {
+        PathBuf::from(path_str)
+    }
 }
 
 impl Config {
     /// Parse CLI arguments, merge with environment variables, validate, and return a resolved Config.
     /// Exits the process with an error message on invalid configuration.
+    ///
+    /// Legacy entry point kept for binaries and tests that predate the
+    /// subcommand split; `main` now uses [`parse_invocation`] instead.
+    #[allow(dead_code)]
     pub fn parse_and_resolve() -> Config {
         let args = CliArgs::parse();
+        if args.command.is_some() {
+            eprintln!("Error: parse_and_resolve() cannot be used with a subcommand");
+            std::process::exit(1);
+        }
+        Self::resolve_login(args)
+    }
 
+    fn resolve_login(args: CliArgs) -> Config {
         // Resolve role: CLI > env > error
         let role = args
             .role
@@ -207,6 +388,8 @@ impl Config {
             std::process::exit(1);
         }
 
+        let sink = args.sink.unwrap_or_else(default_source);
+
         Config {
             role,
             openid_url,
@@ -224,6 +407,7 @@ impl Config {
             scopes,
             is_dynamic_client,
             export,
+            sink,
         }
     }
 }
