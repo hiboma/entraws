@@ -36,7 +36,13 @@ The crate is a single binary (`src/main.rs`) composed of narrow modules that eac
 2. **Implicit flow** (`--implicit`): same server, but the callback HTML posts the `id_token` directly (no code exchange).
 3. **Client credentials grant** (`--client-credentials`): no browser and no local server. Tries `client_secret_basic` first and falls back to `client_secret_post` automatically.
 
-All three flows converge on `aws::assume_role_with_token` → `aws::write_credentials`.
+All three flows converge on `aws::assume_role_with_token`. By default the
+result is persisted via `aws::write_credentials`; when `--export` is set,
+`aws::print_credentials_as_exports` emits POSIX `export` statements to
+stdout instead and the credentials file is never touched. The `--export`
+branch implies `--quiet` so informational tracing output does not
+contaminate stdout (tracing writes to stderr, so `--export --debug` still
+produces a clean `eval`-able stream).
 
 ### Local callback server (`src/server.rs`)
 
@@ -52,6 +58,7 @@ All three flows converge on `aws::assume_role_with_token` → `aws::write_creden
 - `write_credentials` loads the existing `~/.aws/credentials` as an INI file, **updates only the target profile's three credential keys**, and writes the file back. Other profiles must be preserved — the tests in `aws::tests` lock this behavior in.
 - On Unix, the file is opened with `mode(0o600)`.
 - A `symlink_metadata` check refuses to write through a symbolic link (returns `Error::SymlinkRejected`). This is lightweight TOCTOU-style hardening; keep it.
+- `print_credentials_as_exports` is the alternate output path selected by `--export`. It prints three POSIX `export` statements to stdout with values wrapped in single quotes; embedded single quotes are escaped via `'\''` by `shell_single_quote`. Never switch this to double-quoting — session tokens routinely contain `$` / `` ` `` / `\` which are not inert inside double quotes.
 - The JWT is decoded with `jsonwebtoken::dangerous::insecure_decode` **only** to extract `email`/`sub` for `RoleSessionName` and to cross-check `iss` against the discovery document's issuer. **AWS STS performs the authoritative signature and issuer validation**, so entraws deliberately does not verify JWT signatures locally — do not add local JWT signature verification without a concrete reason, and update `README.md` § "JWT signature validation" if the stance changes.
 
 ### Error type (`src/error.rs`)
@@ -74,3 +81,4 @@ All outbound HTTP (OIDC discovery, dynamic client registration, token exchange, 
 - **Callback port**: `constants::CALLBACK_PORT = 6432` and `REDIRECT_URI = "http://127.0.0.1:6432/callback"` must stay in sync, and must match whatever is registered in the IdP. The comment notes 6432 spells "OIDC" on a phone keypad.
 - **Okta scope handling**: `server::resolve_scopes` special-cases hostnames containing `okta.com` to append `offline_access`. This is a documented workaround for Okta's native-client requirements — do not "clean it up" without testing against Okta.
 - **Dependency policy**: `deny.toml` allow-lists only permissive SPDX licenses and restricts crate sources to crates.io. New dependencies must be compatible with that policy; `cargo deny check` runs in CI via `.github/workflows/deny.yml`.
+- **`aws-sdk-sts` features**: `Cargo.toml` pins `aws-sdk-sts` with `default-features = false` and an explicit feature set (`default-https-client`, `rt-tokio`, `behavior-version-latest`). The default `rustls` feature pulls in `aws-smithy-http-client/legacy-rustls-ring`, which transitively depends on rustls 0.21 and rustls-webpki 0.101.x — a branch that no longer receives fixes (see `docs/adr/0002-aws-sdk-sts-rustls-0-23-only.md`). Do not re-enable default features without verifying the advisory status again.

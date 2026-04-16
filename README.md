@@ -18,6 +18,9 @@ This is a Rust reimplementation of
 - Client Credentials grant for machine-to-machine usage
 - Safe credential file handling: existing profiles in `~/.aws/credentials`
   are preserved; only the target profile is updated
+- `--export` mode prints POSIX `export` statements to stdout for
+  `eval "$(entraws ... --export)"` when you do not want to touch the
+  on-disk credentials file
 - File permissions are set to `0600` on Unix
 - Ships as a single static binary
 
@@ -110,6 +113,27 @@ entraws \
   --openid-url "https://<OIDC_PROVIDER>/<TENANT>/v2.0"
 ```
 
+### Export credentials to the current shell (`--export`)
+
+Pass `--export` to print the STS credentials to stdout as POSIX `export`
+statements instead of writing them to `~/.aws/credentials`. Combined with
+`eval`, this loads the credentials into the current shell session:
+
+```sh
+eval "$(entraws --export \
+  --role "arn:aws:iam::<AWS_ACCOUNT_ID>:role/<ROLE_NAME>" \
+  --openid-url "https://<OIDC_PROVIDER>/<TENANT>/v2.0" \
+  --client-id "<OIDC_CLIENT_ID>")"
+
+aws sts get-caller-identity  # reads AWS_ACCESS_KEY_ID / _SECRET / _SESSION_TOKEN
+```
+
+`--export` implies `--quiet` (unless `--debug` is also set), so
+informational logs do not pollute the stream that `eval` consumes. Tracing
+output is emitted to stderr, so `--export --debug` still produces a clean
+stdout. Values are POSIX-single-quoted, so credentials containing shell
+metacharacters are safe to `eval`.
+
 ## Options
 
 | Option | Env Variable | Default | Description |
@@ -123,7 +147,9 @@ entraws \
 | `-p`, `--profile-to-update` | `PROFILE_TO_UPDATE` | `entraws` | Profile name to update |
 | `--aws-config-file` | `AWS_CONFIG_FILE` | `~/.aws/credentials` | Credentials file path |
 | `--scopes` | | `openid email` | OIDC scopes to request |
+| `--export` | | | Print credentials to stdout as `export` statements for `eval "$(...)"` instead of writing them to the credentials file. Implies `--quiet` unless `--debug` is set. |
 | `--debug` | | | Enable verbose logging |
+| `-q`, `--quiet` | | | Suppress informational log output (warn level only) |
 | `--dangerously-log-secrets` | | | Log identifying JWT claims (iss/aud/sub/ver) at DEBUG level. Implies `--debug`. **Use with extreme care.** |
 | `--implicit` | | | Use the implicit flow (not recommended) |
 | `--client-credentials` | | | Use the client credentials grant |
@@ -227,6 +253,9 @@ Properties tab and explicitly assign only the intended users and groups.
   updated; other profiles are preserved.
 - On Unix, the file is written with permission `0600`.
 - If the file does not exist, it is created.
+- With `--export`, the credentials file is not touched at all. The
+  credentials are emitted to stdout and never persisted to disk by
+  entraws.
 
 ### `--dangerously-log-secrets`
 
@@ -268,6 +297,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 cargo deny check
 ```
+
+Architecture decisions are recorded under [`docs/adr/`](docs/adr/).
 
 ## License
 
