@@ -143,10 +143,10 @@
         }
         .minimal-block .note {
             font-family: 'IBM Plex Mono', monospace;
-            font-size: 12px;
+            font-size: 13px;
             letter-spacing: 0.08em;
             text-transform: uppercase;
-            color: var(--muted);
+            color: var(--fg);
         }
     </style>
 </head>
@@ -213,8 +213,8 @@
                 document.title = '\u2713 Done - entraws';
                 setTimeout(function () {
                     render(`
-                        <div class="minimal-block">
-                            <div class="mark">&#x2713;</div>
+                        <div class="minimal-block" role="status">
+                            <div class="mark" aria-hidden="true">&#x2713;</div>
                             <div class="note">You may now close this tab</div>
                         </div>`);
                     document.body.classList.add('minimal');
