@@ -136,6 +136,13 @@ pub enum Error {
     #[allow(dead_code)]
     #[error("Cached credentials expired for cache-key {cache_key}. Run `entraws login` again.")]
     CacheExpired { cache_key: String },
+
+    #[error(
+        "AWS config at {} already has a [profile {profile}] section that was not created by entraws. \
+         Pass --force to overwrite, or remove the section manually.",
+        path.display()
+    )]
+    ProfileExists { profile: String, path: PathBuf },
 }
 
 /// Convenience alias used throughout the crate.

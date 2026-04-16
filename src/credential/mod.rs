@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod aws_config;
 pub mod cache;
 pub mod file;
 #[cfg(target_os = "macos")]

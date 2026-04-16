@@ -6,9 +6,35 @@ them transparently without copying secrets into the environment.
 
 ## Setup
 
-1. Run `entraws login` once to populate the sink (Keychain on macOS,
-   `~/.aws/credentials` elsewhere). The tool prints a `credential_process`
-   stanza on success:
+Two paths:
+
+### Automated (`--configure-profile`)
+
+Run a login with `--configure-profile` and entraws will write the
+matching `~/.aws/config` stanza for you:
+
+```sh
+entraws -p entraws --sink keychain --configure-profile \
+  --role ... --openid-url ... --client-id ...
+```
+
+entraws only manages sections it wrote itself. Any hand-authored
+`[profile ...]` with the same name is preserved unless you pass
+`--force`. Use `--dry-run` to see the diff first.
+
+### Manual
+
+1. Run `entraws login` once to populate the sink.
+2. Get the cache-key:
+
+   ```sh
+   entraws cache-key --role ... --openid-url ... --client-id ...
+   ```
+
+3. Append the stanza below to `~/.aws/config` (not
+   `~/.aws/credentials`). Use an absolute path to the `entraws`
+   binary so the stanza keeps working regardless of the caller's
+   `PATH`.
 
    ```ini
    [profile entraws]
@@ -17,11 +43,7 @@ them transparently without copying secrets into the environment.
    region = ap-northeast-1
    ```
 
-2. Append that stanza to `~/.aws/config` (not `~/.aws/credentials`).
-   Use an absolute path to the `entraws` binary so the stanza keeps
-   working regardless of the caller's `PATH`.
-
-3. Run AWS commands as usual:
+4. Run AWS commands as usual:
 
    ```sh
    AWS_PROFILE=entraws aws sts get-caller-identity
@@ -29,6 +51,25 @@ them transparently without copying secrets into the environment.
 
 The AWS CLI invokes `entraws credentials` for each command, reads the
 JSON payload from stdout, and uses the credentials within that process.
+
+## Managed-section markers
+
+When `--configure-profile` writes a section, it brackets the content
+with comment markers so future runs can update it safely:
+
+```ini
+# managed-by: entraws (do not edit; run `entraws --configure-profile` to update)
+[profile entraws]
+credential_process = ...
+region = ...
+# end: entraws
+```
+
+If you edit the section by hand and leave the markers in place,
+subsequent `--configure-profile` runs will overwrite your changes
+(the markers mean "entraws owns this"). To opt a section out of
+automatic management, delete the marker comments and entraws will
+treat it as hand-authored the next time.
 
 ## Behaviour
 

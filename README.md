@@ -126,7 +126,7 @@ sessions.
 
 ### AWS `credential_process` integration
 
-Add the stanza printed after login to `~/.aws/config`, for example:
+The `~/.aws/config` stanza entraws expects looks like:
 
 ```ini
 [profile entraws]
@@ -134,13 +134,41 @@ credential_process = entraws credentials --cache-key <hex> --source keychain
 region = ap-northeast-1
 ```
 
-The AWS CLI will now fetch credentials from the sink (through a
-per-process cache at `~/.entraws/cache/`) whenever a command runs under
-`AWS_PROFILE=entraws`. When the cached credentials expire, `entraws
-credentials` exits non-zero with a hint to rerun `entraws login` —
-interactive flows are never started from a `credential_process`
-subprocess because that path has a short timeout and no TTY. See
-[docs/credential-process.md](docs/credential-process.md) for details.
+Pass `--configure-profile` to have entraws write this section for you
+after a successful login:
+
+```sh
+entraws -p entraws --sink keychain --configure-profile \
+  --role ... --openid-url ... --client-id ...
+```
+
+The write is opt-in and, by default, safe:
+
+- A profile section that was not previously written by entraws is
+  left untouched — pass `--force` to overwrite.
+- `--dry-run` prints the diff to stderr and exits without modifying
+  anything.
+- Adjacent profiles, comments, and blank lines are preserved
+  byte-for-byte (entraws-managed sections are bracketed by
+  `# managed-by: entraws` / `# end: entraws` markers).
+- A one-shot `~/.aws/config.entraws.bak` backup is created the first
+  time an existing config is touched.
+
+Once configured, the AWS CLI fetches credentials from the sink
+(through a per-process cache at `~/.entraws/cache/`) whenever a
+command runs under `AWS_PROFILE=entraws`. When the cached credentials
+expire, `entraws credentials` exits non-zero with a hint to rerun
+`entraws login` — interactive flows are never started from a
+`credential_process` subprocess because that path has a short timeout
+and no TTY. See [docs/credential-process.md](docs/credential-process.md)
+for details.
+
+If you would rather edit `~/.aws/config` by hand, regenerate the
+cache-key with:
+
+```sh
+entraws cache-key --role ... --openid-url ... --client-id ...
+```
 
 ### Check remaining TTL
 

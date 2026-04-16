@@ -31,6 +31,16 @@ async fn main() {
         config::Invocation::Status(args) => {
             status_cmd::run(args);
         }
+        config::Invocation::CacheKey(args) => {
+            // Thin wrapper over `credential::cache_key`. Prints the hex
+            // key on stdout (one line, no trailing prose) so it can be
+            // piped into shell substitutions such as
+            // `credential_process = entraws credentials --cache-key
+            // "$(entraws cache-key --role ... --openid-url ... --client-id ...)"`.
+            let key = credential::cache_key(&args.role, &args.openid_url, &args.client_id);
+            println!("{key}");
+            std::process::exit(0);
+        }
         config::Invocation::Login(config) => {
             run_login(config).await;
         }

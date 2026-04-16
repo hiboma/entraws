@@ -197,11 +197,82 @@ pub fn persist_credentials(
         tracing::warn!("failed to update credential cache: {e}");
     }
 
-    tracing::info!(
-        "Stored credentials via sink={} (cache-key={key})",
-        sink.name()
-    );
-    print_credential_process_hint(config, &key, sink.name());
+    // Report the outcome on stderr. Intentionally does **not** include
+    // the cache-key: the key is a deterministic function of
+    // role/openid-url/client-id and is also visible as a filename under
+    // `~/.entraws/cache/`, so echoing it on every login would only pad
+    // logs. Operators who need the key can regenerate it with
+    // `entraws cache-key ...`.
+    if !config.quiet {
+        eprintln!(
+            "stored credentials to {} (profile={})",
+            sink.name(),
+            config.profile_to_update
+        );
+    }
+
+    // Optional: write the matching credential_process stanza to
+    // ~/.aws/config so the operator does not have to hand-edit it.
+    // Failures here do not roll back the sink write — the credentials
+    // are still usable via `entraws credentials --cache-key ...` even
+    // if ~/.aws/config could not be updated.
+    if config.configure_profile {
+        maybe_configure_aws_config(config, &key, sink.name())?;
+    }
+
+    Ok(())
+}
+
+/// Thin wrapper around [`crate::credential::aws_config::configure_profile`]
+/// that builds the request payload from a resolved [`Config`] and
+/// reports the outcome on stderr so the operator can tell at a glance
+/// whether anything changed.
+fn maybe_configure_aws_config(
+    config: &crate::config::Config,
+    cache_key: &str,
+    sink_name: &str,
+) -> Result<()> {
+    use crate::credential::aws_config::{configure_profile, ConfigureOutcome, ConfigureRequest};
+
+    let bin = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "entraws".to_string());
+
+    let req = ConfigureRequest {
+        path: &config.aws_config_config_file,
+        profile: &config.profile_to_update,
+        cache_key,
+        source: sink_name,
+        region: &config.region,
+        binary_path: &bin,
+        force: config.force,
+        dry_run: config.dry_run,
+    };
+
+    let outcome = configure_profile(&req)?;
+
+    if !config.quiet {
+        match outcome {
+            ConfigureOutcome::Added => eprintln!(
+                "wrote [profile {}] to {}",
+                config.profile_to_update,
+                config.aws_config_config_file.display()
+            ),
+            ConfigureOutcome::Updated => eprintln!(
+                "updated [profile {}] in {}",
+                config.profile_to_update,
+                config.aws_config_config_file.display()
+            ),
+            ConfigureOutcome::NoOp => {
+                eprintln!("[profile {}] already up-to-date", config.profile_to_update)
+            }
+            ConfigureOutcome::DryRun => eprintln!(
+                "--dry-run: {} would be updated (see diff above)",
+                config.aws_config_config_file.display()
+            ),
+        }
+    }
+
     Ok(())
 }
 
@@ -229,27 +300,6 @@ pub fn print_credentials_as_exports(credentials: &StsCredentials) {
 /// emits a literal quote, and re-opens the span.
 fn shell_single_quote(s: &str) -> String {
     s.replace('\'', r"'\''")
-}
-
-/// Print a one-time hint showing the `credential_process` configuration
-/// stanza for `~/.aws/config` after a successful login. Idempotent and
-/// side-effect-free aside from writing to stderr.
-fn print_credential_process_hint(config: &crate::config::Config, cache_key: &str, sink_name: &str) {
-    let bin = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "entraws".to_string());
-    eprintln!();
-    eprintln!("Add this to ~/.aws/config:");
-    eprintln!();
-    eprintln!(
-        "    [profile {profile}]",
-        profile = config.profile_to_update
-    );
-    eprintln!(
-        "    credential_process = {bin} credentials --cache-key {cache_key} --source {sink_name}"
-    );
-    eprintln!("    region = {region}", region = config.region);
-    eprintln!();
 }
 
 #[cfg(test)]
