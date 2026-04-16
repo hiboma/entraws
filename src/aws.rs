@@ -206,6 +206,32 @@ pub fn write_credentials(
     Ok(())
 }
 
+/// Print temporary AWS credentials to stdout as POSIX `export` statements so
+/// they can be consumed by `eval "$(entraws ... --export)"`. Values are wrapped
+/// in single quotes with embedded single quotes escaped as `'\''`, which is
+/// the canonical way to quote an arbitrary string in a POSIX shell.
+pub fn print_credentials_as_exports(credentials: &StsCredentials) {
+    println!(
+        "export AWS_ACCESS_KEY_ID='{}'",
+        shell_single_quote(&credentials.access_key_id)
+    );
+    println!(
+        "export AWS_SECRET_ACCESS_KEY='{}'",
+        shell_single_quote(&credentials.secret_access_key)
+    );
+    println!(
+        "export AWS_SESSION_TOKEN='{}'",
+        shell_single_quote(&credentials.session_token)
+    );
+}
+
+/// Escape embedded single quotes for a POSIX single-quoted string. Each `'`
+/// inside `s` is replaced with `'\''`, which closes the current quoted span,
+/// emits a literal quote, and re-opens the span.
+fn shell_single_quote(s: &str) -> String {
+    s.replace('\'', r"'\''")
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests for [`write_credentials`]. All file operations use
@@ -310,6 +336,35 @@ mod tests {
         let meta = std::fs::metadata(&path).unwrap();
         let mode = meta.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "expected 0o600, got {mode:o}");
+    }
+
+    #[test]
+    fn shell_single_quote_preserves_ordinary_strings() {
+        assert_eq!(shell_single_quote("AKIA_TEST"), "AKIA_TEST");
+        assert_eq!(
+            shell_single_quote("abc+/=XYZ"),
+            "abc+/=XYZ",
+            "base64 characters that are special in double quotes must pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn shell_single_quote_escapes_embedded_single_quotes() {
+        // A single embedded quote becomes '\'' — closing the span,
+        // a literal quote, and re-opening the span.
+        assert_eq!(shell_single_quote("a'b"), r"a'\''b");
+        assert_eq!(shell_single_quote("'"), r"'\''");
+        assert_eq!(shell_single_quote("a'b'c"), r"a'\''b'\''c");
+    }
+
+    #[test]
+    fn shell_single_quote_handles_edge_cases() {
+        assert_eq!(shell_single_quote(""), "");
+        // Two adjacent quotes become two consecutive escape sequences.
+        assert_eq!(shell_single_quote("''"), r"'\'''\''");
+        // Shell metacharacters are inert inside single quotes, so they
+        // must pass through unchanged.
+        assert_eq!(shell_single_quote("$`\\!*?"), "$`\\!*?");
     }
 
     #[cfg(unix)]

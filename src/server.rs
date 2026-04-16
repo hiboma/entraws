@@ -226,9 +226,13 @@ async fn process_token_inner(
     )
     .await?;
 
-    // Write the credentials to the AWS config file.
-    let config_file_str = config.aws_config_file.display().to_string();
-    crate::aws::write_credentials(&credentials, &config_file_str, &config.profile_to_update)?;
+    if config.export {
+        crate::aws::print_credentials_as_exports(&credentials);
+    } else {
+        // Write the credentials to the AWS config file.
+        let config_file_str = config.aws_config_file.display().to_string();
+        crate::aws::write_credentials(&credentials, &config_file_str, &config.profile_to_update)?;
+    }
 
     Ok(())
 }
