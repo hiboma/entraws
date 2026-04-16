@@ -64,6 +64,12 @@ pub struct CliArgs {
     /// Custom scopes to request
     #[arg(long = "scopes")]
     pub scopes: Option<String>,
+
+    /// Print credentials as shell export statements to stdout instead of
+    /// writing them to the AWS credentials file. Intended for use with
+    /// `eval "$(entraws ... --export)"`. Implies --quiet unless --debug is set.
+    #[arg(long = "export")]
+    pub export: bool,
 }
 
 /// Resolved configuration with all values finalized from CLI args and environment variables.
@@ -84,6 +90,7 @@ pub struct Config {
     pub client_credentials: bool,
     pub scopes: Option<String>,
     pub is_dynamic_client: bool,
+    pub export: bool,
 }
 
 impl Config {
@@ -173,8 +180,11 @@ impl Config {
         let dangerously_log_secrets = args.dangerously_log_secrets;
         // --dangerously-log-secrets implies --debug so tracing is at DEBUG level.
         let debug = args.debug || dangerously_log_secrets;
-        // --quiet is overridden by --debug / --dangerously-log-secrets.
-        let quiet = args.quiet && !debug;
+        let export = args.export;
+        // --quiet is overridden by --debug / --dangerously-log-secrets, and
+        // implied by --export so informational logs do not pollute the stdout
+        // export statements that the shell will evaluate.
+        let quiet = (args.quiet || export) && !debug;
         let implicit = args.implicit;
         let client_credentials = args.client_credentials;
         let scopes = args.scopes;
@@ -213,6 +223,7 @@ impl Config {
             client_credentials,
             scopes,
             is_dynamic_client,
+            export,
         }
     }
 }
@@ -326,5 +337,17 @@ mod tests {
     fn cli_rejects_unknown_flag() {
         let result = CliArgs::try_parse_from(["entraws", "--not-a-real-flag"]);
         assert!(result.is_err(), "unknown flag should fail to parse");
+    }
+
+    #[test]
+    fn cli_accepts_export_flag() {
+        let args = CliArgs::try_parse_from(["entraws", "--export"]).expect("parse should succeed");
+        assert!(args.export);
+    }
+
+    #[test]
+    fn cli_export_defaults_to_false() {
+        let args = CliArgs::try_parse_from(["entraws"]).expect("parse should succeed");
+        assert!(!args.export);
     }
 }
