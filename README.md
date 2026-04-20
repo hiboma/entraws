@@ -274,6 +274,127 @@ before issuing credentials, so forged tokens cannot reach a successful
 `AssumeRoleWithWebIdentity`. entraws only decodes the JWT locally to extract
 the `email` or `sub` claim for use as `RoleSessionName`.
 
+### `--client-credentials` risks
+
+The client credentials grant exchanges a long-lived OIDC client secret for
+an access token without any human in the loop. This is convenient for CI,
+but carries real risks:
+
+- The client secret must be stored somewhere the CI job can read it
+  (environment variable, secret manager), and every place that can read it
+  can impersonate the machine identity.
+- The resulting `RoleSessionName` identifies the OIDC subject, not a
+  human, so audit logs lose the usual "who triggered this" signal.
+- There is no second factor and no browser-mediated consent; a leaked
+  secret directly yields AWS credentials for the trust-policy role.
+
+Prefer short-lived OIDC credentials from your CI platform when available
+(for example, GitHub Actions' OIDC token exchanged directly against
+`sts:AssumeRoleWithWebIdentity` — no entraws needed). Only use
+`--client-credentials` when a long-lived service account is genuinely
+required, and rotate the client secret on a schedule.
+
+### `--export` and environment-variable exposure
+
+`--export` + `eval` avoids writing credentials to `~/.aws/credentials`,
+but it does not make the credentials "safer" in every sense. Once loaded
+into the shell they become environment variables, which means:
+
+- They are inherited by every child process launched from that shell.
+- They are visible via `/proc/<pid>/environ` to any process running as
+  the same user.
+- They can end up in shell history if the `entraws --export` line is
+  typed without the `eval` wrapper.
+- They survive for the rest of the shell session even after the
+  underlying role would normally have expired from a caller's view.
+
+Use `--export` for scratch sessions and ephemeral CI shells, not as a
+default "more secure" alternative to the credentials file.
+
+### No automatic credential rotation
+
+entraws is a one-shot CLI. It writes STS credentials and exits; it does
+not run as a daemon, does not refresh credentials on expiry, and does
+not integrate with the AWS SDK's `credential_process` mechanism. When
+the credentials expire (default: 1 hour) you must rerun entraws to
+obtain a new set.
+
+If you need automatic credential refresh, `aws sso login` (when IAM
+Identity Center is available) or a dedicated credential broker such as
+`aws-vault` or `saml2aws` is the better fit. Implementing rotation in
+entraws would require storing a long-lived refresh token on disk or in
+an OS keychain, which is at odds with the tool's goal of being a small,
+stateless CLI.
+
+## Why entraws instead of `aws configure sso` / `aws sso login`?
+
+`aws sso login` is the right tool when your organization has adopted
+**AWS IAM Identity Center** and centralizes all AWS account access
+through it. entraws targets the cases where that assumption does not
+hold. Specifically:
+
+### 1. No IAM Identity Center, no AWS Organizations
+
+`aws sso login` requires an IAM Identity Center **organization
+instance**, which in turn is most useful when enabled from an AWS
+Organizations management account. An Identity Center **account
+instance** cannot grant sign-on to AWS accounts at all — it only
+supports AWS managed applications.
+
+entraws talks directly to AWS STS via `AssumeRoleWithWebIdentity`
+against an IAM OIDC identity provider. No IAM Identity Center, no AWS
+Organizations, no permission sets — just an IAM role with a web
+identity trust policy.
+
+### 2. Direct federation with your existing IdP
+
+`aws sso login` federates through IAM Identity Center, even when the
+authoritative identity source is Microsoft Entra ID, Okta, Auth0, or
+Google. entraws lets the same IdP act as the OIDC provider for AWS
+directly, removing Identity Center as a middle layer and the SCIM
+provisioning it implies.
+
+### 3. Writes to `~/.aws/credentials`, not the SSO cache
+
+`aws sso login` stores tokens in `~/.aws/sso/cache/` and expects the
+consumer to understand SSO-aware profile configuration in
+`~/.aws/config`. Older SDKs, third-party tools, and scripts that only
+read the classic `[profile]` blocks in `~/.aws/credentials` do not
+always support that cache format.
+
+entraws writes plain `aws_access_key_id` / `aws_secret_access_key` /
+`aws_session_token` to a named profile in `~/.aws/credentials`, so
+anything that reads an INI-style credentials file works unchanged.
+
+### 4. Non-interactive machine-to-machine authentication
+
+`aws sso login` is built around a human opening a browser. It has no
+equivalent of the OAuth 2.0 client credentials grant.
+
+entraws supports `--client-credentials` for CI jobs and daemons that
+authenticate with a client ID and secret against the IdP, obtain an
+access token, and exchange it for AWS credentials — no browser, no
+device code, no interactive prompt.
+
+### 5. `eval`-friendly `--export` mode
+
+`--export` emits POSIX `export` statements on stdout so the credentials
+can be injected into the current shell with
+`eval "$(entraws ... --export)"`. This keeps short-lived AWS
+credentials out of the on-disk credentials file entirely, which is
+useful for scratch sessions, ephemeral CI shells, and dev containers.
+
+### When `aws sso login` is still the better choice
+
+- Your organization already runs IAM Identity Center and manages
+  permission sets centrally.
+- You need single sign-on across many AWS accounts from one login.
+- You rely on the SDK's automatic SSO token refresh.
+
+In those cases, use `aws sso login`. entraws is aimed at the
+complementary case: a small number of roles, no Identity Center, and a
+preference for the classic INI credentials file.
+
 ## Relationship with existing SSO tools
 
 entraws targets environments where developers already authenticate to their
