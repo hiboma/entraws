@@ -183,8 +183,7 @@ async fn process_client_credentials_response(
     if config.export {
         crate::aws::print_credentials_as_exports(&assume_result);
     } else {
-        let config_file_str = config.aws_config_file.display().to_string();
-        crate::aws::write_credentials(&assume_result, &config_file_str, &config.profile_to_update)?;
+        crate::aws::persist_credentials(config, &assume_result)?;
     }
 
     Ok(())

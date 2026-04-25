@@ -16,6 +16,9 @@ This is a Rust reimplementation of
 - Implicit flow with PKCE (for providers that do not support code flow)
 - Dynamic Client Registration
 - Client Credentials grant for machine-to-machine usage
+- Pluggable credential sinks: `~/.aws/credentials` (default on Linux) or
+  the macOS login keychain (default on macOS)
+- AWS SDK `credential_process` integration via `entraws credentials`
 - Safe credential file handling: existing profiles in `~/.aws/credentials`
   are preserved; only the target profile is updated
 - `--export` mode prints POSIX `export` statements to stdout for
@@ -102,6 +105,79 @@ entraws --client-credentials \
 
 This flow does not open a browser. It requests a token directly from the
 IdP using the client credentials and then calls AWS STS.
+
+### Credential sinks: Keychain vs. file
+
+On macOS the default sink is the login keychain; on other platforms it
+is `~/.aws/credentials`. Override with `--sink`:
+
+```sh
+# Explicitly store credentials in the shared credentials file
+entraws --sink file --role ... --openid-url ... --client-id ...
+
+# Explicitly store in macOS Keychain
+entraws --sink keychain --role ... --openid-url ... --client-id ...
+```
+
+After a successful login, entraws prints the `credential_process`
+stanza you should add to `~/.aws/config` so the AWS CLI and SDKs can
+consume the stored credentials without exposing them to other shell
+sessions.
+
+### AWS `credential_process` integration
+
+The `~/.aws/config` stanza entraws expects looks like:
+
+```ini
+[profile entraws]
+credential_process = entraws credentials --cache-key <hex> --source keychain
+region = ap-northeast-1
+```
+
+Pass `--configure-profile` to have entraws write this section for you
+after a successful login:
+
+```sh
+entraws -p entraws --sink keychain --configure-profile \
+  --role ... --openid-url ... --client-id ...
+```
+
+The write is opt-in and, by default, safe:
+
+- A profile section that was not previously written by entraws is
+  left untouched — pass `--force` to overwrite.
+- `--dry-run` prints the diff to stderr and exits without modifying
+  anything.
+- Adjacent profiles, comments, and blank lines are preserved
+  byte-for-byte (entraws-managed sections are bracketed by
+  `# managed-by: entraws` / `# end: entraws` markers).
+- A one-shot `~/.aws/config.entraws.bak` backup is created the first
+  time an existing config is touched.
+
+Once configured, the AWS CLI fetches credentials from the sink
+(through a per-process cache at `~/.entraws/cache/`) whenever a
+command runs under `AWS_PROFILE=entraws`. When the cached credentials
+expire, `entraws credentials` exits non-zero with a hint to rerun
+`entraws login` — interactive flows are never started from a
+`credential_process` subprocess because that path has a short timeout
+and no TTY. See [docs/credential-process.md](docs/credential-process.md)
+for details.
+
+If you would rather edit `~/.aws/config` by hand, regenerate the
+cache-key with:
+
+```sh
+entraws cache-key --role ... --openid-url ... --client-id ...
+```
+
+### Check remaining TTL
+
+```sh
+entraws status --cache-key <hex-from-login-output>
+```
+
+Reads only the per-process cache, so it never triggers a keychain
+prompt.
 
 ### Dynamic Client Registration
 

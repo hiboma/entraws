@@ -36,7 +36,11 @@ serde_urlencoded = "0.7"
 rust-ini = "0.21"
 subtle = "2"
 thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+tempfile = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
 
 [dev-dependencies]
 wiremock = "0.6"
-tempfile = "3"
