@@ -12,6 +12,8 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -102,6 +104,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          pattern: entraws-*
           path: dist
           merge-multiple: true
 
@@ -110,6 +113,7 @@ jobs:
       - name: Generate CycloneDX SBOM
         run: |
           cargo cyclonedx --format json --override-filename entraws
+          test -f entraws.json
           mv entraws.json dist/entraws.cdx.json
 
       # Attest provenance for every published tarball so consumers can verify
