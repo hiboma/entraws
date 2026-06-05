@@ -87,6 +87,18 @@ We rejected two alternatives:
   explicit rather than incidental, and can be re-evaluated if the
   project ever needs FIPS mode (`rustls-aws-lc-fips`) or ring
   (`rustls-ring`).
+- `reqwest` (the OIDC discovery / token-exchange client) is pinned to the
+  same rustls stack for the same reason: its default `native-tls` feature
+  pulled in `openssl-sys`, which has no system OpenSSL to link against in
+  the musl cross-build used by `release.yml` and broke the static Linux
+  binaries. Disabling reqwest's default features and selecting
+  `rustls-tls-native-roots` drops `openssl-sys` / `native-tls` entirely and
+  shares the one rustls 0.23 stack across the whole crate. We pick the
+  `*-native-roots` variant (not plain `rustls-tls`, which would bundle only
+  the Mozilla webpki-roots) so reqwest keeps reading the OS trust store the
+  way native-tls did — corporate CAs and TLS-intercepting proxies still
+  validate, and the CA source stays symmetric with aws-sdk's
+  `rustls-native-certs`.
 
 ### Negative
 

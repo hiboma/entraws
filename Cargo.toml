@@ -8,7 +8,22 @@ description = "AWS STS OIDC Driver - Get temporary AWS credentials via OpenID Co
 anyhow = "1"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+# Disable reqwest's default TLS (native-tls = OpenSSL): on musl that needs a
+# system OpenSSL the cross toolchain has no, so the static build fails. Use
+# rustls instead, which links no C OpenSSL and matches the aws-lc-rs backed
+# rustls 0.23 stack aws-sdk-sts already uses (see docs/adr/0002). Use the
+# *-native-roots variant so reqwest reads the OS trust store (like the old
+# native-tls did and like aws-sdk's rustls-native-certs does) — that keeps
+# corporate CAs / TLS-intercepting proxies working, where plain webpki-roots
+# would reject them. We keep the other reqwest defaults (http2, charset,
+# system-proxy) by re-listing them.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls-native-roots",
+    "http2",
+    "charset",
+    "system-proxy",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 jsonwebtoken = "10"
