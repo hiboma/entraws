@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```sh
 cargo build                                                # debug build
 cargo build --release --locked                             # release build (CI uses this)
-cargo test --all-targets --all-features                    # full test suite, matches CI
+cargo test --all-targets --all-features --locked           # full test suite, matches CI
 cargo test <name>                                          # run a single test by substring match
 cargo test -p entraws <module>::tests::<name> -- --exact   # run exactly one test
 cargo clippy --all-targets --all-features -- -D warnings   # matches CI — warnings are errors
@@ -20,7 +20,11 @@ cargo deny check                                           # advisories / licens
 cargo run -- --role <arn> --openid-url <url> --client-id <id>   # run locally
 ```
 
-CI (`.github/workflows/ci.yml`) runs fmt, clippy (deny-warnings), and tests on both `ubuntu-latest` and `macos-latest`, plus a release build with `--locked`. Reproduce failures with the four commands above before pushing.
+CI (`.github/workflows/ci.yml`) runs fmt, clippy (deny-warnings), and tests (with `--locked`) on both `ubuntu-latest` and `macos-latest`, plus a release build with `--locked`. Reproduce failures with the four commands above before pushing.
+
+Other workflows: `deny.yml` (cargo-deny advisories/licenses/sources, also on a weekly schedule), `pinact.yml` (verifies every action is SHA-pinned), `lint-workflows.yml` (runs `actionlint` + `zizmor` on workflow changes only, via `paths:` filter), `scorecard.yml` (OpenSSF Scorecard), and `release.yml` (per-target binaries with sha256 checksums **plus** a CycloneDX SBOM `entraws.cdx.json` attached to the release). `lefthook.yml` defines local pre-commit (`cargo fmt --check`, `actionlint`, `zizmor`) and pre-push (`cargo clippy`, `cargo test --locked`) hooks — install with `lefthook install`; CI is still the gate.
+
+When adding or editing a workflow, keep every third-party action SHA-pinned (with the tag in a trailing comment) so `pinact` passes, declare an explicit minimal `permissions:` block, and keep `actionlint`/`zizmor` clean. The `release.yml` build job deliberately uses **no** build cache so a poisoned cache entry cannot be baked into a published binary — do not re-add `Swatinem/rust-cache` there.
 
 Tests hit real TCP sockets via `wiremock::MockServer` and real temp files via `tempfile::TempDir`, but never reach the network or touch `~/.aws/credentials`. There is no separate integration-test crate — unit tests and `wiremock`-backed tests both live in `#[cfg(test)] mod tests { ... }` / `mod integration_tests { ... }` inside each source file.
 
