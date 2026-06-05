@@ -413,13 +413,51 @@ of roles or accounts, and the two can write to different profiles in
 
 ```sh
 cargo build
-cargo test
+cargo test --locked
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 cargo deny check
 ```
 
 Architecture decisions are recorded under [`docs/adr/`](docs/adr/).
+
+### Local git hooks
+
+[lefthook](https://github.com/evilmartians/lefthook) runs a fast subset of the
+CI checks before you commit or push. Install the hooks once after cloning:
+
+```sh
+lefthook install
+```
+
+- **pre-commit**: `cargo fmt --check`, plus `actionlint` and `zizmor` when a
+  workflow file changes.
+- **pre-push**: `cargo clippy -D warnings` and `cargo test --locked`.
+
+Hooks are a convenience for fast feedback; CI remains the authoritative gate, so
+a `--no-verify` bypass cannot land an unchecked change on `main`.
+
+### Supply chain hardening
+
+The project applies the practices recommended by
+[SLSA](https://slsa.dev/), the
+[OpenSSF Scorecard](https://scorecard.dev/), and
+[OWASP Top 10:2025 A03 Software Supply Chain Failures](https://owasp.org/Top10/):
+
+- **Pinned, reproducible builds** — `Cargo.lock` is committed and CI builds and
+  tests with `--locked`, so a lockfile mismatch fails the build.
+- **Pinned GitHub Actions** — every third-party action is referenced by commit
+  SHA (with the tag in a comment); `pinact` verifies this in CI.
+- **Workflow static analysis** — `actionlint` and `zizmor` analyze the workflow
+  YAML for syntax errors and supply-chain risks (overly broad permissions,
+  script injection, cache poisoning).
+- **Dependency review** — `cargo deny` enforces an advisory, license, and
+  source allow-list; Dependabot opens update PRs with a cooldown so freshly
+  published versions are not pulled in immediately.
+- **SBOM** — release builds attach a CycloneDX SBOM (`entraws.cdx.json`)
+  generated from `Cargo.lock` to the GitHub release.
+- **Least-privilege workflows** — each workflow declares an explicit minimal
+  `permissions` block.
 
 ## License
 
