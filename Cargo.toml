@@ -11,11 +11,15 @@ tokio = { version = "1", features = ["full"] }
 # Disable reqwest's default TLS (native-tls = OpenSSL): on musl that needs a
 # system OpenSSL the cross toolchain has no, so the static build fails. Use
 # rustls instead, which links no C OpenSSL and matches the aws-lc-rs backed
-# rustls 0.23 stack aws-sdk-sts already uses (see docs/adr/0002). We keep the
-# other reqwest defaults (http2, charset, system-proxy) by re-listing them.
+# rustls 0.23 stack aws-sdk-sts already uses (see docs/adr/0002). Use the
+# *-native-roots variant so reqwest reads the OS trust store (like the old
+# native-tls did and like aws-sdk's rustls-native-certs does) — that keeps
+# corporate CAs / TLS-intercepting proxies working, where plain webpki-roots
+# would reject them. We keep the other reqwest defaults (http2, charset,
+# system-proxy) by re-listing them.
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
-    "rustls-tls",
+    "rustls-tls-native-roots",
     "http2",
     "charset",
     "system-proxy",
