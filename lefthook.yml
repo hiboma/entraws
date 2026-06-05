@@ -1,0 +1,28 @@
+# Local git hooks for fast feedback before pushing.
+# CI remains the authoritative gate (hooks can be bypassed with --no-verify);
+# these only shorten the feedback loop on the developer's machine.
+#
+# Install with:  lefthook install
+# Run manually:  lefthook run pre-commit   /   lefthook run pre-push
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+      fail_text: "cargo fmt --all で整形してください"
+    actionlint:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: actionlint
+    zizmor:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: zizmor .github/workflows/
+
+pre-push:
+  parallel: false
+  commands:
+    clippy:
+      run: cargo clippy --all-targets --all-features -- -D warnings
+    test:
+      run: cargo test --all-targets --all-features --locked
