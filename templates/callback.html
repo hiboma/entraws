@@ -126,6 +126,28 @@
             border-top: 1px solid var(--rule);
             margin: 24px 0;
         }
+        body.minimal {
+            background: #ffffff;
+        }
+        body.minimal #root {
+            text-align: center;
+        }
+        .minimal-block {
+            text-align: center;
+        }
+        .minimal-block .mark {
+            font-size: 48px;
+            color: var(--muted);
+            line-height: 1;
+            margin-bottom: 16px;
+        }
+        .minimal-block .note {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 13px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--fg);
+        }
     </style>
 </head>
 <body>
@@ -188,6 +210,15 @@
                         <p class="muted">For the AWS SDK, refer to your SDK documentation on specifying a named profile. You may now close this window.</p>
                     </div>`);
                 window.location.hash = '';
+                document.title = '\u2713 Done - entraws';
+                setTimeout(function () {
+                    render(`
+                        <div class="minimal-block" role="status">
+                            <div class="mark" aria-hidden="true">&#x2713;</div>
+                            <div class="note">You may now close this tab</div>
+                        </div>`);
+                    document.body.classList.add('minimal');
+                }, 3000);
             }
 
             function handleError(response) {
