@@ -52,7 +52,7 @@ produces a clean `eval`-able stream).
 
 - `AppState` is shared across handlers via `Arc`. It holds `Config`, `OidcConfig`, `PkceParams`, a `OnceLock<String>` for the dynamically-registered client id, and a `tokio::sync::Notify` used for graceful shutdown.
 - `bind_server` binds the `TcpListener` and builds the `Router` **before** `main` opens the browser, which eliminates the race where the browser would hit a socket that is not yet listening.
-- `main` wraps `serve` in a `tokio::select!` against a 2-minute wall-clock timeout — the server will shut down from either a successful token exchange, an authenticated error, or the timeout.
+- `main` wraps `serve` in a 2-minute wall-clock timeout. Handlers record the terminal authentication result before signaling shutdown; only completed credential output counts as success. Timeout, authentication failure, server I/O errors, and shutdown without a result exit with code 1. Retryable errors leave the server running.
 - `process_token` re-validates the PKCE `state` parameter server-side with `subtle::ConstantTimeEq` even though the callback HTML already validates it in JS, because an attacker could POST directly to `/process_token` and bypass the client-side check. **Do not remove this check.**
 - `status_for_error` centralizes the `Error → HTTP status` mapping. Errors that indicate an unrecoverable STS/JWT failure also signal shutdown, while `InvalidState`, token-exchange, and filesystem errors leave the server running so the user can retry.
 - The front-end HTML lives in `templates/callback.html` and is embedded via `include_str!`; `{{placeholders}}` are substituted at request time.
