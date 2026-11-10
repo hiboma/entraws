@@ -89,6 +89,7 @@ async fn main() {
             pkce: pkce_params,
             dynamic_client_id: std::sync::OnceLock::new(),
             shutdown_notify: shutdown.clone(),
+            auth_result: std::sync::OnceLock::new(),
         });
 
         // Bind the server first so the port is ready before the browser connects
@@ -102,15 +103,71 @@ async fn main() {
             eprintln!("Please open this URL manually: {browser_url}");
         }
 
-        // Run the server with a 2-minute wall-clock timeout
-        tokio::select! {
-            _ = server::serve(listener, app, shutdown.clone()) => {},
-            _ = tokio::time::sleep(Duration::from_secs(120)) => {
-                tracing::info!("Operation timed out after 2 minutes");
-                shutdown.notify_one();
-            }
+        if let Err(e) = wait_for_browser_flow(
+            server::serve(listener, app, shutdown),
+            &app_state.auth_result,
+            Duration::from_secs(120),
+        )
+        .await
+        {
+            eprintln!("Error: Browser flow failed: {e}");
+            std::process::exit(1);
         }
 
         info!("Browser flow completed successfully");
+    }
+}
+
+/// Server shutdown alone is not evidence that credentials were obtained.
+async fn wait_for_browser_flow(
+    server: impl std::future::Future<Output = std::io::Result<()>>,
+    auth_result: &std::sync::OnceLock<Result<(), String>>,
+    timeout: Duration,
+) -> Result<(), String> {
+    match tokio::time::timeout(timeout, server).await {
+        Err(_) => Err("Operation timed out waiting for authentication".to_string()),
+        Ok(Err(e)) => Err(format!("Server error: {e}")),
+        Ok(Ok(())) => auth_result
+            .get()
+            .cloned()
+            .unwrap_or_else(|| Err("Server stopped before authentication completed".to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::OnceLock;
+
+    #[tokio::test]
+    async fn browser_flow_requires_successful_authentication() {
+        for result in [None, Some(Err("STS failed".to_string())), Some(Ok(()))] {
+            let outcome = OnceLock::new();
+            if let Some(ref result) = result {
+                outcome.set(result.clone()).unwrap();
+            }
+            let actual =
+                wait_for_browser_flow(async { Ok(()) }, &outcome, Duration::from_secs(1)).await;
+            assert_eq!(actual.is_ok(), result == Some(Ok(())));
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_flow_timeout_is_failure() {
+        let result =
+            wait_for_browser_flow(std::future::pending(), &OnceLock::new(), Duration::ZERO).await;
+        assert!(result.unwrap_err().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn browser_server_error_is_failure_even_after_authentication() {
+        let outcome = OnceLock::from(Ok(()));
+        let result = wait_for_browser_flow(
+            async { Err(std::io::Error::other("server failed")) },
+            &outcome,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(result.unwrap_err().contains("server failed"));
     }
 }

@@ -25,6 +25,8 @@ pub struct AppState {
     /// `tokio::sync::Mutex`).
     pub dynamic_client_id: std::sync::OnceLock<String>,
     pub shutdown_notify: Arc<Notify>,
+    /// First terminal authentication result, recorded before shutdown.
+    pub auth_result: std::sync::OnceLock<Result<(), String>>,
 }
 
 /// JSON body received on POST /process_token.
@@ -261,8 +263,14 @@ async fn process_token(
 ) -> impl IntoResponse {
     debug!("Server received request on /process_token");
 
-    match process_token_inner(&state, body).await {
+    let result = process_token_inner(&state, body).await;
+    process_token_response(&state, result)
+}
+
+fn process_token_response(state: &AppState, result: Result<(), Error>) -> axum::response::Response {
+    match result {
         Ok(()) => {
+            let _ = state.auth_result.set(Ok(()));
             state.shutdown_notify.notify_one();
             let response = ApiResponse {
                 status: "success".to_string(),
@@ -287,6 +295,7 @@ async fn process_token(
                     | Error::NoRoleSessionName
                     | Error::JwtDecode(_)
             ) {
+                let _ = state.auth_result.set(Err(e.to_string()));
                 state.shutdown_notify.notify_one();
             }
             let response = ApiResponse {
@@ -314,6 +323,9 @@ async fn auth_failure(
         }
     }
 
+    let _ = state
+        .auth_result
+        .set(Err("Authentication failed".to_string()));
     state.shutdown_notify.notify_one();
 
     let response = ApiResponse {
@@ -347,7 +359,11 @@ pub async fn bind_server(state: Arc<AppState>) -> (TcpListener, Router) {
 }
 
 /// Start serving on an already-bound listener with graceful shutdown.
-pub async fn serve(listener: TcpListener, app: Router, shutdown_notify: Arc<Notify>) {
+pub async fn serve(
+    listener: TcpListener,
+    app: Router,
+    shutdown_notify: Arc<Notify>,
+) -> std::io::Result<()> {
     info!("Serving on {}", listener.local_addr().unwrap());
 
     axum::serve(listener, app)
@@ -356,7 +372,81 @@ pub async fn serve(listener: TcpListener, app: Router, shutdown_notify: Arc<Noti
             info!("Shutdown signal received, stopping server");
         })
         .await
-        .unwrap_or_else(|e| {
-            info!("Server error: {e}");
-        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_state() -> AppState {
+        AppState {
+            config: crate::config::Config {
+                role: "test-role".into(),
+                openid_url: "https://idp.example.test".into(),
+                client_id: Some("test-client".into()),
+                client_secret: None,
+                region: "us-east-1".into(),
+                duration_seconds: 3600,
+                profile_to_update: "test".into(),
+                aws_config_file: "unused-credentials".into(),
+                debug: false,
+                quiet: false,
+                dangerously_log_secrets: false,
+                implicit: false,
+                client_credentials: false,
+                scopes: None,
+                is_dynamic_client: false,
+                export: false,
+            },
+            oidc_config: crate::oidc::OidcConfig {
+                authorization_endpoint: "https://idp.example.test/authorize".into(),
+                token_endpoint: "https://idp.example.test/token".into(),
+                registration_endpoint: None,
+                issuer: "https://idp.example.test".into(),
+            },
+            pkce: crate::pkce::PkceParams::generate(),
+            dynamic_client_id: std::sync::OnceLock::new(),
+            shutdown_notify: Arc::new(Notify::new()),
+            auth_result: std::sync::OnceLock::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_token_results_are_recorded_before_shutdown() {
+        for result in [
+            Ok(()),
+            Err(Error::Sts("denied".into())),
+            Err(Error::NoStsCredentials),
+        ] {
+            let state = app_state();
+            let success = result.is_ok();
+            let response = process_token_response(&state, result);
+            state.shutdown_notify.notified().await;
+            assert_eq!(state.auth_result.get().unwrap().is_ok(), success);
+            assert_eq!(response.status().is_success(), success);
+        }
+    }
+
+    #[tokio::test]
+    async fn retryable_failure_does_not_record_success() {
+        let state = app_state();
+        let response = process_token_response(&state, Err(Error::InvalidState));
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(state.auth_result.get().is_none());
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, state.shutdown_notify.notified())
+                .await
+                .is_err()
+        );
+        process_token_response(&state, Ok(()));
+        assert_eq!(state.auth_result.get(), Some(&Ok(())));
+    }
+
+    #[tokio::test]
+    async fn frontend_auth_failure_records_failure() {
+        let state = Arc::new(app_state());
+        auth_failure(State(state.clone()), Json(AuthFailRequest { reason: None })).await;
+        state.shutdown_notify.notified().await;
+        assert!(state.auth_result.get().unwrap().is_err());
+    }
 }
